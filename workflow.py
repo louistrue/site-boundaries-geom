@@ -251,12 +251,15 @@ def create_cadastral_ifc(gdf_3d, output_path, offset_x=0.0, offset_y=0.0, offset
                                         name=f"Terrain_{name}")
         terrain.PredefinedType = "TERRAIN"
 
-        ifcopenshell.api.run(
-            "geometry.edit_object_placement",
-            model,
-            product=terrain,
-            relative_to=site_placement,
-        )
+        # Create placement relative to site
+        # Since edit_object_placement doesn't support relative_to, we create it manually
+        origin = model.createIfcCartesianPoint([0., 0., 0.])
+        axis = model.createIfcDirection([0., 0., 1.])
+        ref_direction = model.createIfcDirection([1., 0., 0.])
+        axis2_placement = model.createIfcAxis2Placement3D(origin, axis, ref_direction)
+        # site.ObjectPlacement is the placement to reference
+        terrain_placement = model.createIfcLocalPlacement(site.ObjectPlacement, axis2_placement)
+        terrain.ObjectPlacement = terrain_placement
         
         # Assign terrain to site
         ifcopenshell.api.run("spatial.assign_container", model,
@@ -305,6 +308,11 @@ def create_cadastral_ifc(gdf_3d, output_path, offset_x=0.0, offset_y=0.0, offset
         faces = []
 
         for tri in triangulate(polygon_2d):
+            # Filter out triangles that extend beyond the polygon boundary
+            # Delaunay triangulation fills the convex hull, so we need to check containment
+            if not polygon_2d.contains(tri.centroid):
+                continue
+            
             oriented_tri = orient(tri, sign=1.0)
             tri_coords = list(oriented_tri.exterior.coords)[:-1]  # drop closing vertex
             tri_points = [
