@@ -9,6 +9,9 @@ This tool converts Swiss cadastral site boundaries (EGRID parcels) into 3D IFC (
 - **IFC4 export** with proper georeferencing (EPSG:2056 Swiss LV95)
 - **Terrain smoothing** to reduce noise while preserving overall slope
 - **Solid geometry** with triangulated top surface and extruded sides
+- **Combined terrain workflow** - site solid with surrounding terrain mesh and precise cutout
+- **IFC schema compliance** - proper property sets (Pset_LandRegistration, Pset_SiteCommon, Qto_SiteBaseQuantities)
+- **Cadastre metadata** - automatic extraction and mapping to IFC properties
 
 ## Installation
 
@@ -37,15 +40,66 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Basic Usage
+### Combined Terrain Workflow (Recommended)
 
-Fetch geometry for an EGRID and generate an IFC file:
+The `combined_terrain.py` script creates a single IFC file containing:
+- **Surrounding terrain mesh** in a circular area around the site
+- **Site solid** with smoothed surface, height-adjusted to align with terrain
+- **Precise cutout** in terrain that follows the exact site boundary shape
+- **Full cadastre metadata** mapped to IFC schema property sets
+
+#### Basic Usage
+
+```bash
+python combined_terrain.py --egrid CH999979659148 --radius 500 --output combined.ifc
+```
+
+#### Command-Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--egrid` | EGRID number to fetch boundary for | Required* |
+| `--center-x` | Center easting (EPSG:2056) if no EGRID | - |
+| `--center-y` | Center northing (EPSG:2056) if no EGRID | - |
+| `--radius` | Radius of circular terrain area (meters) | `500` |
+| `--resolution` | Grid resolution in meters (lower = more detail) | `10` |
+| `--densify` | Site boundary densification interval (meters) | `0.5` |
+| `--attach-to-solid` | Attach terrain to smoothed site solid edges (less bumpy) | False |
+| `--output` | Output IFC file path | `combined_terrain.ifc` |
+
+*Either `--egrid` or both `--center-x` and `--center-y` must be provided.
+
+#### Examples
+
+**Standard combined terrain (500m radius):**
+```bash
+python combined_terrain.py --egrid CH999979659148 --output combined.ifc
+```
+
+**Smaller area for testing:**
+```bash
+python combined_terrain.py --egrid CH999979659148 --radius 200 --resolution 30 --output test.ifc
+```
+
+**High detail with smooth terrain attachment:**
+```bash
+python combined_terrain.py --egrid CH999979659148 --radius 300 --resolution 5 --densify 1.0 --attach-to-solid --output detailed.ifc
+```
+
+**Faster processing with coarser resolution:**
+```bash
+python combined_terrain.py --egrid CH999979659148 --radius 500 --resolution 20 --densify 2.0 --output fast.ifc
+```
+
+### Site Boundary Only (workflow.py)
+
+For generating only the site boundary solid without surrounding terrain:
 
 ```bash
 python workflow.py --egrid CH999979659148 --output CH999979659148.ifc
 ```
 
-### Command-Line Options
+#### Workflow Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -60,115 +114,120 @@ python workflow.py --egrid CH999979659148 --output CH999979659148.ifc
 
 *Either `--egrid` or `--cadastral` must be provided.
 
-### Examples
+## IFC Property Sets and Metadata
 
-**Using EGRID with API elevation service:**
-```bash
-python workflow.py --egrid CH999979659148 --output terrain.ifc
-```
+The generated IFC files include comprehensive metadata following IFC schema standards:
 
-**Using local cadastral file and DEM:**
-```bash
-python workflow.py --cadastral parcels.gpkg --dem dem.tif --output terrain.ifc
-```
+### Standard Property Sets
 
-**Reducing API calls with larger densification interval:**
-```bash
-python workflow.py --egrid CH999979659148 --densify 2.0 --output terrain.ifc
-```
+#### Pset_LandRegistration
+- `LandID`: Parcel number (e.g., "WI3988")
+- `LandTitleID`: EGRID identifier (e.g., "CH999979659148")
+- `IsPermanentID`: Boolean indicating EGRID is permanent identifier
 
-**Custom project origin:**
-```bash
-python workflow.py --egrid CH999979659148 --offset-x 2687100 --offset-y 1246400 --offset-z 600
-```
+#### Pset_SiteCommon
+- `Reference`: Local identifier from cadastre
+- `TotalArea`: Total site area in m²
+- `BuildableArea`: Maximum buildable area in m²
+
+#### Qto_SiteBaseQuantities
+- `GrossArea`: Total site area in m²
+- `GrossPerimeter`: Site perimeter in meters
+
+### Custom Property Set
+
+#### CPset_SwissCadastre
+- `GeoportalURL`: Link to canton geoportal
+- `Canton`: Canton abbreviation (e.g., "ZH")
+- `ParcelNumber`: Parcel number
+
+### IfcSite Attributes
+
+- `LandTitleNumber`: EGRID (official Swiss land registry ID)
+- `LongName`: Canton + Parcel number
+- `Description`: Human-readable site description
+
+All property sets include proper `OwnerHistory` for IFC viewer compatibility.
 
 ## How It Works
 
-The workflow consists of three main stages:
+### Combined Terrain Workflow
 
-### 1. Boundary Fetching (`fetch_boundary_by_egrid`)
+The `combined_terrain.py` script performs the following steps:
 
-- Queries the geo.admin.ch API (`api3.geo.admin.ch/rest/services/ech/MapServer/find`)
-- Searches for cadastral boundaries by EGRID in the `ch.kantone.cadastralwebmap-farbe` layer
-- Returns a GeoDataFrame with the polygon geometry in EPSG:2056 (Swiss LV95)
+1. **Boundary Fetching**
+   - Fetches cadastral boundary polygon via geo.admin.ch API
+   - Extracts metadata (parcel number, canton, area, perimeter)
+   - Calculates site centroid for terrain center
 
-**API Details:**
-- Layer: `ch.kantone.cadastralwebmap-farbe`
-- Search field: `egris_egrid`
-- Coordinate system: EPSG:2056 (Swiss LV95)
+2. **Terrain Grid Creation**
+   - Creates circular grid of points around site centroid
+   - Grid resolution determines point density
+   - Filters points within specified radius
 
-### 2. 3D Draping (`drape_cadastral_to_3d`)
+3. **Elevation Sampling**
+   - Fetches elevation for terrain grid points
+   - Fetches elevation for site boundary points (densified)
+   - Progress updates during API calls
 
-Converts 2D polygons to 3D by sampling elevation data:
+4. **Height Offset Calculation**
+   - Samples terrain elevations at site boundary
+   - Compares with smoothed site elevations
+   - Calculates offset to align site solid with terrain
 
-1. **Densification**: Adds vertices along the polygon boundary at regular intervals (default: 0.5m)
-   - Ensures sufficient detail for terrain representation
-   - Smaller intervals = more accurate but slower (more API calls)
+5. **Site Solid Creation**
+   - Applies smoothing algorithm (best-fit plane + circular mean filter)
+   - Adjusts height using calculated offset
+   - Creates closed solid with triangulated top, sides, and bottom
 
-2. **Elevation Sampling**:
-   - **With DEM**: Samples elevation from a local GeoTIFF using rasterio
-   - **Without DEM**: Uses geo.admin.ch height API (`api3.geo.admin.ch/rest/services/height`)
-     - Makes individual API calls for each point
-     - Progress updates every 20 points
+6. **Terrain Mesh with Cutout**
+   - Merges site boundary points into terrain grid
+   - Triangulates combined point cloud (Delaunay)
+   - Excludes triangles whose centroids are inside site boundary
+   - Optionally uses smoothed site elevations for boundary points (`--attach-to-solid`)
 
-3. **3D Coordinate Creation**: Combines 2D coordinates with sampled elevations
-4. **Interior Handling**: Processes any holes/interior rings in the polygon
+7. **IFC Generation**
+   - Creates georeferenced IFC4 file
+   - Sets project origin at site centroid (rounded to 100m)
+   - Adds terrain mesh (IfcGeographicElement with SurfaceModel)
+   - Adds site solid (IfcGeographicElement with FacetedBrep)
+   - Adds site footprint (2D polyline on IfcSite)
+   - Maps cadastre metadata to IFC property sets
+   - Sets OwnerHistory on all entities
 
-### 3. IFC Generation (`create_cadastral_ifc`)
+### Site Boundary Only Workflow
 
-Creates a georeferenced IFC4 file with:
+The `workflow.py` script creates a standalone site solid:
 
-#### Project Setup
-- Creates `IfcProject` with SI units (meters)
-- Sets up model contexts (Body, FootPrint)
-- Defines coordinate reference system:
-  - **Projected CRS**: EPSG:2056 (Swiss LV95 / CH1903+)
-  - **Vertical Datum**: LN02
-- Calculates project origin (rounded to nearest 100m) if not specified
+1. **Boundary Fetching**: Same as combined workflow
+2. **3D Draping**: Samples elevations and creates 3D coordinates
+3. **Smoothing**: Applies terrain smoothing algorithm
+4. **Solid Creation**: Creates closed solid with triangulated top
+5. **IFC Export**: Exports site solid with footprint
 
-#### Site and Terrain Creation
+### Smoothing Algorithm
 
-For each cadastral parcel:
+The terrain smoothing uses a multi-step process:
 
-1. **IfcSite**: 
-   - Created with EGRID as name
-   - Contains a 2D footprint polyline representation
-   - Aggregated to the project
+1. **Best-fit plane**: Calculates plane that best fits elevation data using least squares
+2. **Circular mean filter**: Smooths raw elevations (window size: 9)
+3. **Residual calculation**: Computes residuals (smoothed - plane)
+4. **Residual smoothing**: Applies circular mean filter to residuals
+5. **Residual attenuation**: Scales residuals to 20% to reduce bumps
+6. **Final elevation**: `plane + 0.2 * smoothed_residuals`
 
-2. **IfcGeographicElement** (Terrain):
-   - Type: `TERRAIN`
-   - Contains 3D solid geometry
-   - Placed relative to the site
+This preserves overall slope while removing small terrain variations.
 
-#### Geometry Processing
+### Terrain Cutout Algorithm
 
-The terrain geometry undergoes several processing steps:
+The precise cutout follows these steps:
 
-1. **Smoothing**:
-   - **Best-fit plane**: Calculates a plane that best fits the elevation data
-   - **Circular mean filter**: Smooths raw elevations and residuals separately
-   - **Residual attenuation**: Reduces small bumps (20% of residual) while preserving overall slope
-   - Result: Flat top surface with preserved tilt/orientation
+1. **Boundary point merging**: Adds site boundary vertices to terrain grid
+2. **Triangulation**: Creates Delaunay triangulation of combined points
+3. **Triangle exclusion**: Removes triangles whose centroids are inside site polygon
+4. **Boundary attachment** (optional): Uses smoothed site elevations for boundary points
 
-2. **Triangulation**:
-   - Triangulates the 2D polygon footprint
-   - Assigns smoothed Z coordinates to each triangle vertex
-   - Creates top faces for the solid
-
-3. **Solid Creation**:
-   - **Top faces**: Triangulated surface with smoothed elevations
-   - **Side faces** ("skirt"): Extruded down from boundary to base elevation (2m below lowest point)
-   - **Bottom face**: Closes the solid at the base elevation
-   - Result: Closed manifold solid (FacetedBrep)
-
-#### Coordinate Transformation
-
-All coordinates are transformed relative to the project origin:
-- `local_x = easting - offset_x`
-- `local_y = northing - offset_y`
-- `local_z = elevation - offset_z`
-
-This keeps coordinates manageable while preserving georeferencing through the `IfcMapConversion`.
+This ensures the terrain mesh edges align exactly with the site boundary.
 
 ## Technical Details
 
@@ -177,6 +236,7 @@ This keeps coordinates manageable while preserving georeferencing through the `I
 - **Input/Output CRS**: EPSG:2056 (Swiss LV95 / CH1903+)
 - **Vertical Datum**: LN02 (Swiss height system)
 - **Units**: Meters (SI)
+- **Project Origin**: Centered on site centroid (rounded to nearest 100m)
 
 ### Elevation Data Sources
 
@@ -191,21 +251,24 @@ This keeps coordinates manageable while preserving georeferencing through the `I
    - Faster than API for large datasets
    - Recommended for batch processing
 
-### Smoothing Algorithm
-
-The terrain smoothing uses a multi-step process:
-
-1. Calculate best-fit plane using least squares
-2. Apply circular mean filter (window size: 9) to raw elevations
-3. Calculate residuals (smoothed - plane)
-4. Smooth residuals with circular mean filter
-5. Attenuate residuals (20% scale factor)
-6. Final elevation = plane + attenuated residuals
-
-This preserves the overall slope while removing small terrain variations.
-
 ### IFC Structure
 
+**combined_terrain.py:**
+```
+IfcProject
+└── IfcSite
+    ├── Representation: FootPrint (2D polyline)
+    ├── Property Sets: Pset_LandRegistration, Pset_SiteCommon, CPset_SwissCadastre
+    ├── Quantities: Qto_SiteBaseQuantities
+    ├── IfcGeographicElement (Surrounding_Terrain)
+    │   ├── PredefinedType: TERRAIN
+    │   └── Representation: Body (ShellBasedSurfaceModel with cutout)
+    └── IfcGeographicElement (Site_Solid)
+        ├── PredefinedType: TERRAIN
+        └── Representation: Body (FacetedBrep solid)
+```
+
+**workflow.py:**
 ```
 IfcProject
 └── IfcSite (EGRID)
@@ -215,14 +278,31 @@ IfcProject
         └── Representation: Body (FacetedBrep solid)
 ```
 
+### Performance Notes
+
+- Each grid point requires one API call to the Swiss height service
+- A 500m radius with 10m resolution creates ~2000 points (~3-4 minutes)
+- A 500m radius with 20m resolution creates ~500 points (~1 minute)
+- Use larger resolution values (15-25m) for faster processing
+- Use smaller resolution values (2-5m) for detailed terrain
+- The circular area ensures consistent coverage even when site is at terrain edge
+
 ## Troubleshooting
 
 ### API Rate Limits
 
 If you encounter rate limiting with the elevation API:
-- Use a local DEM file (`--dem`)
+- Use a local DEM file (`--dem` for workflow.py)
+- Increase resolution (`--resolution 20` or higher)
 - Increase densification interval (`--densify 2.0` or higher)
-- Process smaller parcels
+- Process smaller areas (reduce `--radius`)
+
+### Property Sets Not Visible in Viewer
+
+Ensure OwnerHistory is set (automatically handled in `combined_terrain.py`):
+- All property sets include OwnerHistory
+- All relationships include OwnerHistory
+- All entities include OwnerHistory
 
 ### Invalid Geometry
 
@@ -242,10 +322,11 @@ If using ifcopenshell, ensure compatibility with your Python version.
 
 ## Output
 
-The generated IFC file contains:
+The generated IFC files contain:
 - Georeferenced site boundaries
-- 3D terrain geometry as solid volumes
+- 3D terrain geometry (solid volumes or surface meshes)
 - Proper IFC4 structure for BIM applications
+- Comprehensive metadata in standard property sets
 - Compatible with major IFC viewers (BlenderBIM, Solibri, etc.)
 
 ## License
@@ -257,4 +338,4 @@ See LICENSE file for details.
 - [geo.admin.ch API Documentation](https://api3.geo.admin.ch/)
 - [IFC4 Schema](https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes-ifc/)
 - [Swiss LV95 Coordinate System](https://www.swisstopo.admin.ch/en/knowledge-facts/surveying-geodesy/reference-systems/switzerland.html)
-
+- [buildingSMART Property Sets](https://www.buildingsmart.org/standards/bsi-standards/ifc-library/)
