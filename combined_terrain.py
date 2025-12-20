@@ -14,7 +14,7 @@ import numpy as np
 import requests
 import ifcopenshell
 import ifcopenshell.api
-from shapely.geometry import shape, Point, Polygon
+from shapely.geometry import shape, Point, Polygon, MultiPolygon
 from shapely.ops import triangulate
 from shapely.geometry.polygon import orient
 import argparse
@@ -108,6 +108,320 @@ def fetch_elevation_batch(coords, batch_size=50, delay=0.1):
         print(f"  Warning: {failed_count} points failed to fetch elevation")
     
     return elevations
+
+
+def _geometry_has_z(coords):
+    """Recursively check if a GeoJSON coordinate array contains Z values."""
+    if not coords:
+        return False
+    first = coords[0]
+    if isinstance(first, (float, int)):
+        return len(coords) >= 3
+    return any(_geometry_has_z(part) for part in coords)
+
+
+def _collect_z_range_from_geojson(geometry):
+    """Collect minimum and maximum Z values from a GeoJSON geometry."""
+    z_values = []
+
+    def _walk(values):
+        if isinstance(values, (list, tuple)):
+            if values and isinstance(values[0], (int, float)):
+                if len(values) >= 3:
+                    z_values.append(float(values[2]))
+            else:
+                for value in values:
+                    _walk(value)
+
+    _walk(geometry.get("coordinates", []))
+    if not z_values:
+        return None, None
+    return min(z_values), max(z_values)
+
+
+def _nearest_terrain_height(x, y, terrain_coords, terrain_elevations, default=0.0):
+    """Find nearest terrain elevation for a point."""
+    if not terrain_coords or not terrain_elevations:
+        return default
+
+    best_idx = 0
+    best_dist = float("inf")
+    for idx, (tx, ty) in enumerate(terrain_coords):
+        dist = (tx - x) ** 2 + (ty - y) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    return float(terrain_elevations[best_idx])
+
+
+def _get_attr_float(attrs, keys):
+    """Return the first available attribute from keys as float."""
+    for key in keys:
+        value = attrs.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _estimate_building_height(attrs, default_height=10.0):
+    """Heuristic to estimate building height from swissBUILDINGS3D attributes."""
+    height_keys = [
+        "height",
+        "HEIGHT",
+        "H_GEB",
+        "h_mean",
+        "hmax",
+        "z_max",
+        "zmin",
+        "zmax",
+        "hroof",
+        "roof_height",
+        "buildingheight",
+    ]
+    height = _get_attr_float(attrs, height_keys)
+    if height is None or height <= 0:
+        return default_height
+    return height
+
+
+def _close_ring(ring):
+    """Ensure a ring is closed by repeating the first coordinate if needed."""
+    if not ring:
+        return []
+    if ring[0] != ring[-1]:
+        return ring + [ring[0]]
+    return ring
+
+
+def fetch_buildings_in_radius(center_x, center_y, radius, layer="ch.swisstopo.swissbuildings3d_3_0", max_buildings=250):
+    """
+    Fetch swissBUILDINGS3D 3.0 Beta features in a circular search area.
+    """
+    bbox = (
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    )
+    params = {
+        "geometry": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+        "geometryType": "esriGeometryEnvelope",
+        "layers": f"all:{layer}",
+        "tolerance": 0,
+        "returnGeometry": "true",
+        "sr": "2056",
+        "mapExtent": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+        "imageDisplay": "1000,1000,96",
+        "geometryFormat": "geojson",
+    }
+    url = "https://api3.geo.admin.ch/rest/services/all/MapServer/identify"
+
+    print(f"\nFetching swissBUILDINGS3D 3.0 Beta buildings within {radius}m...")
+    try:
+        response = requests.get(url, params=params, timeout=25)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        print(f"  Warning: Failed to fetch swissBUILDINGS3D data: {exc}")
+        return []
+
+    results = data.get("results", [])
+    if not results:
+        print("  No buildings returned for swissBUILDINGS3D query")
+        return []
+
+    circle = Point(center_x, center_y).buffer(radius)
+    buildings = []
+    for feature in results:
+        geom_json = feature.get("geometry")
+        if not geom_json:
+            continue
+
+        geom_shape = shape(geom_json)
+        if not geom_shape.is_valid:
+            geom_shape = geom_shape.buffer(0)
+        if geom_shape.is_empty:
+            continue
+        if not circle.intersects(geom_shape):
+            continue
+
+        attrs = feature.get("properties", {}) or feature.get("attributes", {}) or {}
+        buildings.append({
+            "geometry": geom_shape,
+            "geometry_json": geom_json,
+            "attributes": attrs,
+            "layer": layer
+        })
+
+    if not buildings:
+        print("  No buildings intersect the requested circle")
+        return []
+
+    # Limit building count by distance to center for performance
+    if max_buildings and len(buildings) > max_buildings:
+        buildings.sort(key=lambda b: b["geometry"].centroid.distance(Point(center_x, center_y)))
+        print(f"  Limiting buildings from {len(buildings)} to closest {max_buildings}")
+        buildings = buildings[:max_buildings]
+
+    print(f"  Prepared {len(buildings)} swissBUILDINGS3D features for processing")
+    return buildings
+
+
+def prepare_building_geometries(building_features, terrain_coords, terrain_elevations):
+    """Normalize swissBUILDINGS3D geometries for IFC creation."""
+    prepared = []
+    for feature in building_features:
+        geom_json = feature["geometry_json"]
+        has_z = _geometry_has_z(geom_json.get("coordinates", []))
+        min_z, max_z = _collect_z_range_from_geojson(geom_json) if has_z else (None, None)
+
+        attrs = feature.get("attributes", {})
+        geom_shape = feature["geometry"]
+
+        base_z = min_z if min_z is not None else _nearest_terrain_height(
+            geom_shape.centroid.x, geom_shape.centroid.y, terrain_coords, terrain_elevations, default=0.0
+        )
+        height = (max_z - min_z) if (min_z is not None and max_z is not None) else _estimate_building_height(attrs)
+
+        building_id = (
+            attrs.get("egid")
+            or attrs.get("EGID")
+            or attrs.get("id")
+            or attrs.get("gml_id")
+            or f"building_{len(prepared) + 1}"
+        )
+
+        prepared.append({
+            "geometry_json": geom_json,
+            "shape": geom_shape,
+            "attributes": attrs,
+            "layer": feature.get("layer", ""),
+            "has_z": has_z,
+            "base_z": base_z,
+            "height": height,
+            "min_z": min_z if min_z is not None else base_z,
+            "max_z": max_z if max_z is not None else base_z + height,
+            "id": str(building_id),
+        })
+    return prepared
+
+
+def _geojson_polygons(geometry_json):
+    """Return list of polygon coordinate arrays from a GeoJSON geometry."""
+    geom_type = geometry_json.get("type")
+    coords = geometry_json.get("coordinates", [])
+    if geom_type == "Polygon":
+        return [coords]
+    if geom_type in ("MultiPolygon", "MultiSurface", "CompositeSurface"):
+        return coords
+    return []
+
+
+def _ring_to_points(model, ring, offset_x, offset_y, offset_z, fallback_z):
+    """Convert a coordinate ring to IFC Cartesian points in local coordinates."""
+    local_points = []
+    for coord in _close_ring(ring):
+        z_val = coord[2] if len(coord) >= 3 else fallback_z
+        local_points.append(model.createIfcCartesianPoint([
+            float(coord[0] - offset_x),
+            float(coord[1] - offset_y),
+            float(float(z_val) - offset_z)
+        ]))
+    return local_points
+
+
+def _create_faces_from_geojson(model, geometry_json, offset_x, offset_y, offset_z, fallback_z):
+    """Create IFC faces from GeoJSON polygons (used when Z is present in geometry)."""
+    faces = []
+    for polygon in _geojson_polygons(geometry_json):
+        if not polygon:
+            continue
+        try:
+            outer_loop = model.createIfcPolyLoop(
+                _ring_to_points(model, polygon[0], offset_x, offset_y, offset_z, fallback_z)
+            )
+            bounds = [model.createIfcFaceOuterBound(outer_loop, True)]
+            for hole in polygon[1:]:
+                hole_loop = model.createIfcPolyLoop(
+                    _ring_to_points(model, hole, offset_x, offset_y, offset_z, fallback_z)
+                )
+                bounds.append(model.createIfcFaceInnerBound(hole_loop, True))
+            faces.append(model.createIfcFace(bounds))
+        except Exception as exc:
+            print(f"    Warning: Failed to convert building polygon to IFC face: {exc}")
+            continue
+    return faces
+
+
+def _create_extruded_building_shell(model, polygon, base_z, height, offset_x, offset_y, offset_z):
+    """Create a closed shell for an extruded building volume, returning grouped faces."""
+    if height is None or height <= 0:
+        return None, 0, [], [], []
+    if not polygon.is_valid:
+        polygon = polygon.buffer(0)
+    if polygon.is_empty:
+        return None, 0, [], [], []
+
+    ext_coords = list(polygon.exterior.coords)
+    if len(ext_coords) < 4:
+        return None, 0, [], [], []
+
+    local_ext = [(float(x - offset_x), float(y - offset_y), float(base_z - offset_z)) for x, y in ext_coords]
+    local_roof = [(float(x - offset_x), float(y - offset_y), float(base_z + height - offset_z)) for x, y in ext_coords]
+
+    all_faces = []
+    roof_faces = []
+    facade_faces = []
+    footprint_faces = []
+
+    # Roof faces (triangulated)
+    tri_list = list(triangulate(polygon))
+    for tri in tri_list:
+        if not polygon.contains(tri.centroid):
+            continue
+        tri_coords = list(tri.exterior.coords)[:-1]
+        tri_points = [
+            model.createIfcCartesianPoint([float(x - offset_x), float(y - offset_y), float(base_z + height - offset_z)])
+            for x, y in tri_coords
+        ]
+        tri_loop = model.createIfcPolyLoop(tri_points)
+        face = model.createIfcFace([model.createIfcFaceOuterBound(tri_loop, True)])
+        roof_faces.append(face)
+        all_faces.append(face)
+
+    # Side faces
+    for i in range(len(local_ext) - 1):
+        p1 = local_ext[i]
+        p2 = local_ext[i + 1]
+        r1 = local_roof[i]
+        r2 = local_roof[i + 1]
+        side_pts = [
+            model.createIfcCartesianPoint([float(p1[0]), float(p1[1]), float(p1[2])]),
+            model.createIfcCartesianPoint([float(r1[0]), float(r1[1]), float(r1[2])]),
+            model.createIfcCartesianPoint([float(r2[0]), float(r2[1]), float(r2[2])]),
+            model.createIfcCartesianPoint([float(p2[0]), float(p2[1]), float(p2[2])])
+        ]
+        side_loop = model.createIfcPolyLoop(side_pts)
+        face = model.createIfcFace([model.createIfcFaceOuterBound(side_loop, True)])
+        facade_faces.append(face)
+        all_faces.append(face)
+
+    # Bottom face
+    bot_points = [model.createIfcCartesianPoint([float(p[0]), float(p[1]), float(p[2])]) for p in reversed(local_ext)]
+    bot_loop = model.createIfcPolyLoop(bot_points)
+    bottom_face = model.createIfcFace([model.createIfcFaceOuterBound(bot_loop, True)])
+    footprint_faces.append(bottom_face)
+    all_faces.append(bottom_face)
+
+    if not all_faces:
+        return None, 0, [], [], []
+
+    shell = model.createIfcClosedShell(all_faces)
+    return shell, len(all_faces), roof_faces, facade_faces, footprint_faces
 
 
 def create_circular_terrain_grid(center_x, center_y, radius=500.0, resolution=10.0):
@@ -387,7 +701,7 @@ def calculate_height_offset(site_polygon, site_coords_3d, terrain_coords, terrai
 
 
 def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds, 
-                        center_x, center_y, egrid=None, cadastre_metadata=None):
+                        center_x, center_y, egrid=None, cadastre_metadata=None, buildings=None, building_mode="solid"):
     """
     Create a single IFC file with both terrain (with hole) and site solid.
     cadastre_metadata: dict with parcel info from cadastre API
@@ -458,8 +772,11 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
     minx, miny, maxx, maxy = bounds
     offset_x = round(center_x, -2)  # Round to nearest 100m
     offset_y = round(center_y, -2)
-    min_z = min(p[2] for tri in terrain_triangles for p in tri)
-    offset_z = round(min_z)
+    terrain_min_z = min(p[2] for tri in terrain_triangles for p in tri)
+    building_min_z = terrain_min_z
+    if buildings:
+        building_min_z = min(b.get("min_z", terrain_min_z) for b in buildings)
+    offset_z = round(min(terrain_min_z, building_min_z))
     
     print(f"\nProject Origin: E={offset_x}, N={offset_y}, H={offset_z}")
     print(f"Site Center (relative to origin): E={center_x - offset_x:.1f}, N={center_y - offset_y:.1f}")
@@ -723,6 +1040,137 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
             traceback.print_exc()
             print(f"  Continuing without site solid...")
     
+    def _surface_rep_from_faces(face_list):
+        if not face_list:
+            return None
+        shell = model.createIfcOpenShell(face_list)
+        shell_model = model.createIfcShellBasedSurfaceModel([shell])
+        return model.createIfcShapeRepresentation(body_context, "Body", "SurfaceModel", [shell_model])
+
+    # Add swissBUILDINGS3D buildings if provided
+    if buildings:
+        print(f"\nAdding {len(buildings)} swissBUILDINGS3D buildings to IFC...")
+        for idx, building in enumerate(buildings, 1):
+            building_name = f"Building_{building.get('id', idx)}"
+            building_elem = ifcopenshell.api.run(
+                "root.create_entity", model, ifc_class="IfcGeographicElement", name=building_name
+            )
+            building_elem.OwnerHistory = owner_history
+            building_elem.ObjectType = "Building"
+            building_elem.PredefinedType = "USERDEFINED"
+
+            origin = model.createIfcCartesianPoint([0.0, 0.0, 0.0])
+            axis = model.createIfcDirection([0.0, 0.0, 1.0])
+            ref_dir = model.createIfcDirection([1.0, 0.0, 0.0])
+            placement = model.createIfcAxis2Placement3D(origin, axis, ref_dir)
+            building_loc = model.createIfcLocalPlacement(site.ObjectPlacement, placement)
+            building_elem.ObjectPlacement = building_loc
+
+            ifcopenshell.api.run("spatial.assign_container", model,
+                                  products=[building_elem], relating_structure=site)
+
+            rep = None
+            roof_rep = None
+            facade_rep = None
+            footprint_rep = None
+            if building.get("has_z"):
+                faces = _create_faces_from_geojson(
+                    model, building["geometry_json"], offset_x, offset_y, offset_z, building.get("base_z", 0.0)
+                )
+                if faces:
+                    if building_mode == "separated":
+                        roof_rep = _surface_rep_from_faces(faces)
+                    else:
+                        shell = model.createIfcOpenShell(faces)
+                        shell_model = model.createIfcShellBasedSurfaceModel([shell])
+                        shape_rep = model.createIfcShapeRepresentation(
+                            body_context, "Body", "SurfaceModel", [shell_model]
+                        )
+                        rep = model.createIfcProductDefinitionShape(None, None, [shape_rep])
+            else:
+                polygons = []
+                if isinstance(building.get("shape"), Polygon):
+                    polygons = [building["shape"]]
+                elif isinstance(building.get("shape"), MultiPolygon):
+                    polygons = list(building["shape"].geoms)
+
+                rep_items = []
+                total_faces = 0
+                roof_faces = []
+                facade_faces = []
+                footprint_faces = []
+                for poly in polygons:
+                    shell, face_count, roof, facades, footprint = _create_extruded_building_shell(
+                        model, poly, building.get("base_z", 0.0), building.get("height", 0.0),
+                        offset_x, offset_y, offset_z
+                    )
+                    total_faces += face_count
+                    roof_faces.extend(roof)
+                    facade_faces.extend(facades)
+                    footprint_faces.extend(footprint)
+                    if shell:
+                        rep_items.append(model.createIfcFacetedBrep(shell))
+
+                if rep_items and building_mode == "solid":
+                    shape_rep = model.createIfcShapeRepresentation(
+                        body_context, "Body", "Brep", rep_items
+                    )
+                    rep = model.createIfcProductDefinitionShape(None, None, [shape_rep])
+                    print(f"  Building {idx}: created {total_faces} faces from {len(rep_items)} footprint(s)")
+                elif building_mode == "separated":
+                    roof_rep = _surface_rep_from_faces(roof_faces)
+                    facade_rep = _surface_rep_from_faces(facade_faces)
+                    footprint_rep = _surface_rep_from_faces(footprint_faces)
+
+            if building_mode == "separated":
+                # Create up to three child geographic elements
+                def _attach_sub_element(name_suffix, shape_rep):
+                    if not shape_rep:
+                        return None
+                    sub_elem = ifcopenshell.api.run(
+                        "root.create_entity", model, ifc_class="IfcGeographicElement",
+                        name=f"{building_name}_{name_suffix}"
+                    )
+                    sub_elem.OwnerHistory = owner_history
+                    sub_elem.PredefinedType = "USERDEFINED"
+                    sub_elem.ObjectType = f"Building_{name_suffix}"
+                    sub_elem.ObjectPlacement = building_elem.ObjectPlacement
+                    sub_elem.Representation = model.createIfcProductDefinitionShape(None, None, [shape_rep])
+                    ifcopenshell.api.run("spatial.assign_container", model,
+                                          products=[sub_elem], relating_structure=site)
+                    return sub_elem
+
+                roof_obj = _attach_sub_element("Roof", roof_rep)
+                facade_obj = _attach_sub_element("Facades", facade_rep)
+                footprint_obj = _attach_sub_element("Footprint", footprint_rep)
+                if not any([roof_obj, facade_obj, footprint_obj]):
+                    print(f"  Building {idx}: No separated geometry created")
+            else:
+                if rep:
+                    building_elem.Representation = rep
+                else:
+                    print(f"  Building {idx}: No geometry created, skipping representation")
+
+            # Attach lightweight metadata
+            attrs = building.get("attributes", {})
+            pset_props = {}
+            egid_value = attrs.get("egid") or attrs.get("EGID")
+            if egid_value:
+                pset_props["EGID"] = str(egid_value)
+            if building.get("layer"):
+                pset_props["SourceLayer"] = building["layer"]
+            if building.get("height"):
+                pset_props["HeightEstimate"] = float(building["height"])
+
+            if pset_props:
+                pset_buildings = ifcopenshell.api.run(
+                    "pset.add_pset", model, product=building_elem, name="CPset_SwissBUILDINGS3D"
+                )
+                set_owner_history_on_pset(pset_buildings)
+                ifcopenshell.api.run("pset.edit_pset", model, pset=pset_buildings, properties=pset_props)
+
+        print(f"Completed adding {len(buildings)} buildings")
+    
     # Set OwnerHistory on all relationships that are missing it
     for entity in model:
         if hasattr(entity, 'OwnerHistory') and entity.OwnerHistory is None:
@@ -755,6 +1203,16 @@ def main():
                         help="Site boundary densification interval (meters), default: 0.5")
     parser.add_argument("--attach-to-solid", action="store_true",
                         help="Attach terrain to smoothed site solid edges (less bumpy)")
+    parser.add_argument("--include-buildings", action="store_true",
+                        help="Include swissBUILDINGS3D 3.0 Beta buildings within the terrain radius")
+    parser.add_argument("--building-radius", type=float,
+                        help="Radius for fetching swissBUILDINGS3D buildings (defaults to terrain radius)")
+    parser.add_argument("--building-layer", default="ch.swisstopo.swissbuildings3d_3_0",
+                        help="GeoAdmin layer name for swissBUILDINGS3D 3.0 Beta")
+    parser.add_argument("--max-buildings", type=int, default=250,
+                        help="Limit the number of buildings to include (closest to center)")
+    parser.add_argument("--building-elements", choices=["solid", "separated"], default="solid",
+                        help="Export buildings as solids (default) or separated roof/facade/footprint surfaces")
     parser.add_argument("--output", default="combined_terrain.ifc",
                         help="Output IFC file path")
     
@@ -794,6 +1252,17 @@ def main():
     # Fetch terrain elevations
     print("\nFetching terrain elevations...")
     terrain_elevations = fetch_elevation_batch(terrain_coords)
+
+    # Optionally fetch nearby buildings
+    buildings_prepared = []
+    building_radius = args.building_radius if args.building_radius else args.radius
+    if args.include_buildings:
+        building_features = fetch_buildings_in_radius(
+            center_x, center_y, building_radius, layer=args.building_layer, max_buildings=args.max_buildings
+        )
+        if building_features:
+            buildings_prepared = prepare_building_geometries(building_features, terrain_coords, terrain_elevations)
+            print(f"Prepared {len(buildings_prepared)} buildings for IFC export")
     
     # Get site boundary 3D coordinates
     site_solid_data = None
@@ -801,7 +1270,6 @@ def main():
     smoothed_boundary_z = None
     
     if site_geometry:
-        from shapely.geometry import LineString
         ring = site_geometry.exterior
         distances = np.arange(0, ring.length, args.densify)
         if distances[-1] < ring.length:
@@ -871,7 +1339,8 @@ def main():
     print("\nGenerating combined IFC file...")
     create_combined_ifc(
         terrain_triangles, site_solid_data, args.output, circle_bounds,
-        center_x, center_y, egrid=args.egrid, cadastre_metadata=cadastre_metadata
+        center_x, center_y, egrid=args.egrid, cadastre_metadata=cadastre_metadata,
+        buildings=buildings_prepared, building_mode=args.building_elements
     )
     
     print(f"\nSuccess! Combined terrain IFC saved to: {args.output}")
@@ -879,4 +1348,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
