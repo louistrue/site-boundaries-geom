@@ -12,6 +12,7 @@ This tool converts Swiss cadastral site boundaries (EGRID parcels) into 3D IFC (
 - **Combined terrain workflow** - site solid with surrounding terrain mesh and precise cutout
 - **IFC schema compliance** - proper property sets (Pset_LandRegistration, Pset_SiteCommon, Qto_SiteBaseQuantities)
 - **Cadastre metadata** - automatic extraction and mapping to IFC properties
+- **Optional 3D buildings** - include swissBUILDINGS3D 3.0 Beta meshes around the site
 
 ## Installation
 
@@ -65,6 +66,11 @@ python combined_terrain.py --egrid CH999979659148 --radius 500 --output combined
 | `--resolution` | Grid resolution in meters (lower = more detail) | `10` |
 | `--densify` | Site boundary densification interval (meters) | `0.5` |
 | `--attach-to-solid` | Attach terrain to smoothed site solid edges (less bumpy) | False |
+| `--include-buildings` | Include swissBUILDINGS3D 3.0 Beta buildings | False |
+| `--buildings-separate` | Export swissBUILDINGS3D roofs/facades/footprints as separate objects when Z is present | False |
+| `--building-radius` | Radius for swissBUILDINGS3D query (meters) | Matches `--radius` |
+| `--building-layer` | GeoAdmin layer name for swissBUILDINGS3D | `ch.swisstopo.swissbuildings3d_3_0` |
+| `--max-buildings` | Maximum number of nearby buildings to include | `250` |
 | `--output` | Output IFC file path | `combined_terrain.ifc` |
 
 *Either `--egrid` or both `--center-x` and `--center-y` must be provided.
@@ -89,6 +95,16 @@ python combined_terrain.py --egrid CH999979659148 --radius 300 --resolution 5 --
 **Faster processing with coarser resolution:**
 ```bash
 python combined_terrain.py --egrid CH999979659148 --radius 500 --resolution 20 --densify 2.0 --output fast.ifc
+```
+
+**Include nearby swissBUILDINGS3D buildings (matching terrain radius):**
+```bash
+python combined_terrain.py --egrid CH999979659148 --include-buildings --output combined_with_buildings.ifc
+```
+
+**Separated elements (roofs/facades/footprints when Z is available):**
+```bash
+python combined_terrain.py --egrid CH999979659148 --include-buildings --buildings-separate --output combined_buildings_separated.ifc
 ```
 
 ### Site Boundary Only (workflow.py)
@@ -228,6 +244,12 @@ The precise cutout follows these steps:
 4. **Boundary attachment** (optional): Uses smoothed site elevations for boundary points
 
 This ensures the terrain mesh edges align exactly with the site boundary.
+
+### swissBUILDINGS3D 3.0 Beta buildings
+
+Use `--include-buildings` to request 3D building geometry from the GeoAdmin swissBUILDINGS3D 3.0 Beta layer. Buildings are fetched within the requested radius and filtered to the circular footprint around the site. If the GeoJSON response contains Z coordinates, the script creates a surface model directly from those meshes. Otherwise, it extrudes the building footprint using the nearest sampled terrain elevation and any available height attribute (falling back to 10m). Each building receives a `CPset_SwissBUILDINGS3D` property set with EGID (when present), the source layer, and the height estimate.
+
+Use `--buildings-separate` to export the swissBUILDINGS3D elements as discrete roofs, facades, and footprints (face-based IfcGeographicElement objects) when Z-enabled meshes are returned. This mirrors the swissBUILDINGS3D “separated elements” model; if Z coordinates are missing, the script falls back to footprint extrusion.
 
 ## Technical Details
 
