@@ -93,28 +93,65 @@ class TestGenerateEndpoint:
 class TestJobsEndpoint:
     """Test /jobs endpoints"""
     
-    def test_create_job(self, client, valid_request_payload):
+    @patch('src.terrain_with_site.run_combined_terrain_workflow')
+    def test_create_job(self, mock_terrain, client, valid_request_payload):
         """Test creating a job"""
+        import tempfile
+        import os
+        
+        # Mock terrain generation to avoid real processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_terrain.return_value = tmp_file.name
+        
         response = client.post("/jobs", json=valid_request_payload)
         assert response.status_code == 200
         data = response.json()
         assert "job_id" in data
         assert isinstance(data["job_id"], str)
         assert len(data["job_id"]) > 0
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
     def test_create_job_invalid_payload(self, client):
         """Test creating job with invalid payload"""
         response = client.post("/jobs", json={"egrid": "INVALID"})
         assert response.status_code == 422
     
-    def test_get_job_status_pending(self, client, valid_request_payload):
+    @patch('src.terrain_with_site.run_combined_terrain_workflow')
+    def test_get_job_status_pending(self, mock_terrain, client, valid_request_payload):
         """Test getting status of pending job"""
+        import tempfile
+        import os
+        import time
+        
+        # Mock terrain generation to avoid real processing (but add delay to simulate processing)
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        
+        def delayed_return(*args, **kwargs):
+            time.sleep(0.1)  # Small delay to allow status check
+            return tmp_file.name
+        
+        mock_terrain.side_effect = delayed_return
+        
         # Create a job
         create_response = client.post("/jobs", json=valid_request_payload)
         job_id = create_response.json()["job_id"]
         
-        # Check status
+        # Check status immediately (should be pending or running)
         status_response = client.get(f"/jobs/{job_id}")
+        assert status_response.status_code == 200
+        data = status_response.json()
+        assert data["status"] in ["pending", "running", "completed"]  # May complete quickly
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
         assert status_response.status_code == 200
         data = status_response.json()
         assert data["status"] in ["pending", "running"]

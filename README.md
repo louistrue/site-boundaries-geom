@@ -104,7 +104,6 @@ For generating only the site boundary solid without surrounding terrain:
 ```bash
 python -m src.site_solid --egrid CH999979659148 --output CH999979659148.ifc
 ```
-```
 
 #### Workflow Options
 

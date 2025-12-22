@@ -41,7 +41,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        
+        # Conditionally set CSP: relaxed for docs endpoints, strict otherwise
+        enable_docs = os.getenv("ENABLE_DOCS", "true").lower() == "true"
+        if enable_docs and request.url.path in ["/docs", "/redoc", "/openapi.json"]:
+            # Allow CDN resources for Swagger UI and ReDoc
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "img-src 'self' data: https:"
+            )
+        else:
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
+        
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 

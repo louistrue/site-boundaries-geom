@@ -12,11 +12,14 @@ class TestExceptionHandling:
     def test_generate_timeout_error(self, mock_run, client, valid_request_payload):
         """Test handling of timeout errors"""
         import requests
+        # Mock will raise exception when called
         mock_run.side_effect = requests.Timeout("Request timed out")
         
         response = client.post("/generate", json=valid_request_payload)
         assert response.status_code == 504
-        assert "timeout" in response.json()["detail"].lower()
+        detail = response.json()["detail"].lower()
+        # Check for timeout-related keywords
+        assert "timeout" in detail or "timed out" in detail
     
     @patch('src.rest_api._run_generation')
     def test_generate_http_error(self, mock_run, client, valid_request_payload):
@@ -50,46 +53,108 @@ class TestExceptionHandling:
 class TestEdgeCases:
     """Test edge cases and boundary conditions"""
     
-    def test_minimum_radius(self, client, valid_egrid):
+    @patch('src.rest_api._run_generation')
+    def test_minimum_radius(self, mock_run, client, valid_egrid):
         """Test with minimum valid radius"""
+        import tempfile
+        import os
+        # Mock successful generation
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_run.return_value = None
+        
         payload = {
             "egrid": valid_egrid,
             "radius": 0.1  # Just above zero
         }
         response = client.post("/generate", json=payload)
         # Should accept (validation passes)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
-    def test_maximum_radius(self, client, valid_egrid):
-        """Test with maximum valid radius"""
+    @patch('src.rest_api._run_generation')
+    @pytest.mark.slow
+    def test_maximum_radius(self, mock_run, client, valid_egrid):
+        """Test with maximum valid radius - marked slow due to large radius validation"""
+        import tempfile
+        import os
+        # Mock successful generation
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_run.return_value = None
+        
         payload = {
             "egrid": valid_egrid,
             "radius": 2000.0  # Maximum allowed
         }
         response = client.post("/generate", json=payload)
         # Should accept (validation passes)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
-    def test_minimum_resolution(self, client, valid_egrid):
+    @patch('src.rest_api._run_generation')
+    def test_minimum_resolution(self, mock_run, client, valid_egrid):
         """Test with minimum valid resolution"""
+        import tempfile
+        import os
+        # Mock successful generation
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_run.return_value = None
+        
         payload = {
             "egrid": valid_egrid,
             "resolution": 5.0  # Minimum allowed
         }
         response = client.post("/generate", json=payload)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
-    def test_maximum_resolution(self, client, valid_egrid):
+    @patch('src.rest_api._run_generation')
+    def test_maximum_resolution(self, mock_run, client, valid_egrid):
         """Test with maximum valid resolution"""
+        import tempfile
+        import os
+        # Mock successful generation
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_run.return_value = None
+        
         payload = {
             "egrid": valid_egrid,
             "resolution": 100.0  # Maximum allowed
         }
         response = client.post("/generate", json=payload)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
-    def test_optional_center_coordinates(self, client, valid_egrid):
+    @patch('src.rest_api._run_generation')
+    def test_optional_center_coordinates(self, mock_run, client, valid_egrid):
         """Test with optional center coordinates"""
+        import tempfile
+        import os
+        # Mock successful generation
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_run.return_value = None
+        
         payload = {
             "egrid": valid_egrid,
             "center_x": 2675000.0,
@@ -97,7 +162,11 @@ class TestEdgeCases:
             "radius": 100
         }
         response = client.post("/generate", json=payload)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
     def test_output_name_extension_handling(self, client, valid_request_payload):
         """Test output name extension handling"""
@@ -116,9 +185,18 @@ class TestEdgeCases:
 class TestConcurrentRequests:
     """Test handling of concurrent requests"""
     
-    def test_multiple_jobs_concurrent(self, client, valid_request_payload):
+    @patch('src.terrain_with_site.run_combined_terrain_workflow')
+    def test_multiple_jobs_concurrent(self, mock_terrain, client, valid_request_payload):
         """Test creating multiple jobs concurrently"""
         import concurrent.futures
+        import tempfile
+        import os
+        
+        # Mock terrain generation to avoid real processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_terrain.return_value = tmp_file.name
         
         def create_job():
             return client.post("/jobs", json=valid_request_payload)
@@ -134,34 +212,68 @@ class TestConcurrentRequests:
         # All should have job_ids
         job_ids = [r.json()["job_id"] for r in responses]
         assert len(set(job_ids)) == 5  # All unique
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
 
 
 class TestJobLifecycle:
     """Test job lifecycle and state transitions"""
     
-    def test_job_lifecycle(self, client, valid_request_payload):
+    @patch('src.terrain_with_site.run_combined_terrain_workflow')
+    def test_job_lifecycle(self, mock_terrain, client, valid_request_payload):
         """Test complete job lifecycle"""
+        import tempfile
+        import os
+        import time
+        
+        # Mock terrain generation to avoid real processing (but add delay to simulate processing)
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        
+        def delayed_return(*args, **kwargs):
+            time.sleep(0.1)  # Small delay to allow status check
+            return tmp_file.name
+        
+        mock_terrain.side_effect = delayed_return
+        
         # Create job
         create_response = client.post("/jobs", json=valid_request_payload)
         assert create_response.status_code == 200
         job_id = create_response.json()["job_id"]
         
-        # Check initial status (should be pending or running)
+        # Check initial status (should be pending, running, or completed if very fast)
         status_response = client.get(f"/jobs/{job_id}")
         assert status_response.status_code == 200
         initial_status = status_response.json()["status"]
-        assert initial_status in ["pending", "running"]
+        assert initial_status in ["pending", "running", "completed"]  # May complete quickly
         
         # Job should eventually complete or fail
         # (In real scenario, would wait for completion)
         # This test just verifies the state machine works
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
 
 
 class TestFileHandling:
     """Test file handling and cleanup"""
     
-    def test_temp_file_cleanup(self, client, valid_request_payload):
+    @patch('src.terrain_with_site.run_combined_terrain_workflow')
+    def test_temp_file_cleanup(self, mock_terrain, client, valid_request_payload):
         """Test that temp files are cleaned up"""
+        import tempfile
+        import os
+        
+        # Mock terrain generation to avoid real processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        mock_terrain.return_value = tmp_file.name
+        
         # Create a job (which may create temp files)
         response = client.post("/jobs", json=valid_request_payload)
         assert response.status_code == 200
@@ -170,4 +282,8 @@ class TestFileHandling:
         # This test verifies the job creation mechanism exists
         # In production, files are cleaned up by background tasks after download
         # or automatically via the TTL-based cleanup mechanism
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
 

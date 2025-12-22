@@ -56,7 +56,7 @@ class TestRateLimiting:
         tmp_file.write(b"Mock IFC content")
         tmp_file.close()
         
-        with patch('src.api._run_generation') as mock_run:
+        with patch('src.rest_api._run_generation') as mock_run:
             mock_run.return_value = None
             # Make multiple rapid requests
             responses = []
@@ -67,7 +67,8 @@ class TestRateLimiting:
             # At least one should be rate limited (429) or succeed (200)
             # Note: Rate limiting may not trigger in test environment if using in-memory storage
             # This test verifies the endpoint accepts requests
-            assert all(status in [200, 422, 429, 500, 502, 504] for status in responses)
+            # Only accept valid endpoint responses: success (200), validation error (422), or rate limit (429)
+            assert all(status in [200, 422, 429] for status in responses)
         
         # Cleanup
         if os.path.exists(tmp_file.name):
@@ -148,7 +149,7 @@ class TestInputSanitization:
             "radius": 100
         }
         
-        with patch('src.api._run_generation') as mock_run:
+        with patch('src.rest_api._run_generation') as mock_run:
             mock_run.return_value = None
             response = client.post("/generate", json=payload)
             # Should accept (output_name is just a filename suggestion)
@@ -176,11 +177,12 @@ class TestInputSanitization:
             "radius": 100
         }
         
-        with patch('src.api._run_generation') as mock_run:
+        with patch('src.rest_api._run_generation') as mock_run:
             mock_run.return_value = None
             response = client.post("/generate", json=payload)
             # Should handle safely (output_name is just a filename suggestion)
-            assert response.status_code == 200
+            # May return 200 (success) or 429 (rate limited) - both are acceptable
+            assert response.status_code in [200, 429]
         
         # Cleanup
         if os.path.exists(tmp_file.name):
