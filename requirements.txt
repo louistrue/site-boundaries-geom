@@ -1,7 +1,21 @@
-geopandas>=1.0.0
-shapely>=2.0.0
-rasterio>=1.3.0
-numpy
-pyproj>=3.0.0
-ifcopenshell
-requests
+# Pinned versions for reproducible, secure builds
+geopandas==1.1.1
+shapely==2.1.2
+rasterio==1.4.4
+numpy==2.3.5
+pyproj==3.7.2
+ifcopenshell==0.8.4
+requests==2.32.5
+fastapi==0.127.0
+uvicorn==0.39.0
+scipy==1.15.0
+
+# Security middleware
+slowapi==0.1.9
+python-multipart==0.0.20
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.27.2

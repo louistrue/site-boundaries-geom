@@ -1,0 +1,60 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test files
+test_*.py
+tests/
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+.coveragerc
+run_tests.sh
+test_docker_security.sh
+
+# Generated files
+*.ifc
+results/
+output/
+build/
+*.log
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# Security - never include these
+.env
+.env.*
+*.pem
+*.key
+secrets/
+credentials/
+
+# OS files
+.DS_Store
+Thumbs.db
+
