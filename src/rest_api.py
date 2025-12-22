@@ -17,7 +17,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
-import combined_terrain
+from . import terrain_with_site
 
 # Rate limiter setup
 limiter = Limiter(key_func=get_remote_address)
@@ -272,7 +272,7 @@ async def _cleanup_old_jobs():
 
 async def _run_generation(request: GenerateRequest, output_path: str):
     return await run_in_threadpool(
-        combined_terrain.run_combined_terrain_workflow,
+        terrain_with_site.run_combined_terrain_workflow,
         request.egrid,
         request.center_x,
         request.center_y,

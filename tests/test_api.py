@@ -287,7 +287,7 @@ def main():
         requests.get(f"{BASE_URL}/health", timeout=2)
     except requests.ConnectionError:
         print(f"\n✗ Cannot connect to server at {BASE_URL}")
-        print("  Make sure the server is running: uvicorn api:app --host 0.0.0.0 --port 8000")
+        print("  Make sure the server is running: uvicorn src.rest_api:app --host 0.0.0.0 --port 8000")
         sys.exit(1)
     
     results = []

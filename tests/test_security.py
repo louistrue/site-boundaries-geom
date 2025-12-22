@@ -44,18 +44,34 @@ class TestSecurityHeaders:
 class TestRateLimiting:
     """Test rate limiting functionality"""
     
+    @pytest.mark.slow
     def test_rate_limit_generate_endpoint(self, client, valid_request_payload):
-        """Test rate limiting on /generate endpoint"""
-        # Make multiple rapid requests
-        responses = []
-        for _ in range(15):
-            response = client.post("/generate", json=valid_request_payload)
-            responses.append(response.status_code)
+        """Test rate limiting on /generate endpoint - marked slow due to multiple requests"""
+        from unittest.mock import patch
+        import tempfile
+        import os
         
-        # At least one should be rate limited (429)
-        # Note: Rate limiting may not trigger in test environment if using in-memory storage
-        # This test verifies the endpoint accepts requests
-        assert all(status in [200, 422, 429, 500, 502, 504] for status in responses)
+        # Mock generation to avoid actual processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        
+        with patch('src.api._run_generation') as mock_run:
+            mock_run.return_value = None
+            # Make multiple rapid requests
+            responses = []
+            for _ in range(15):
+                response = client.post("/generate", json=valid_request_payload)
+                responses.append(response.status_code)
+            
+            # At least one should be rate limited (429) or succeed (200)
+            # Note: Rate limiting may not trigger in test environment if using in-memory storage
+            # This test verifies the endpoint accepts requests
+            assert all(status in [200, 422, 429, 500, 502, 504] for status in responses)
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
     def test_rate_limit_jobs_endpoint(self, client, valid_request_payload):
         """Test rate limiting on /jobs endpoint"""
@@ -117,26 +133,58 @@ class TestInputSanitization:
     
     def test_xss_attempt(self, client):
         """Test that XSS attempts are rejected"""
+        from unittest.mock import patch
+        import tempfile
+        import os
+        
+        # Mock generation to avoid actual processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        
         payload = {
             "egrid": "CH999979659148",
             "output_name": "<script>alert('xss')</script>.ifc",
             "radius": 100
         }
-        response = client.post("/generate", json=payload)
-        # Should accept (output_name is just a filename suggestion)
-        # XSS protection is handled by security headers
-        assert response.status_code in [200, 422, 500, 502, 504]
+        
+        with patch('src.api._run_generation') as mock_run:
+            mock_run.return_value = None
+            response = client.post("/generate", json=payload)
+            # Should accept (output_name is just a filename suggestion)
+            # XSS protection is handled by security headers
+            assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
     
     def test_path_traversal_attempt(self, client):
         """Test that path traversal attempts are handled"""
+        from unittest.mock import patch
+        import tempfile
+        import os
+        
+        # Mock generation to avoid actual processing
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".ifc")
+        tmp_file.write(b"Mock IFC content")
+        tmp_file.close()
+        
         payload = {
             "egrid": "CH999979659148",
             "output_name": "../../../etc/passwd",
             "radius": 100
         }
-        response = client.post("/generate", json=payload)
-        # Should handle safely (output_name is just a filename suggestion)
-        assert response.status_code in [200, 422, 500, 502, 504]
+        
+        with patch('src.api._run_generation') as mock_run:
+            mock_run.return_value = None
+            response = client.post("/generate", json=payload)
+            # Should handle safely (output_name is just a filename suggestion)
+            assert response.status_code == 200
+        
+        # Cleanup
+        if os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
 
 
 class TestErrorHandling:

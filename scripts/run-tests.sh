@@ -52,9 +52,9 @@ case "$TEST_TYPE" in
     all)
         echo -e "${YELLOW}Running all tests...${NC}"
         if [ "$COVERAGE" = "true" ]; then
-            pytest tests/ -v --cov=api --cov=combined_terrain --cov-report=term-missing --cov-report=html || EXIT_CODE=$?
+            pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html:build/htmlcov || EXIT_CODE=$?
             echo ""
-            echo -e "${GREEN}Coverage report generated in htmlcov/index.html${NC}"
+            echo -e "${GREEN}Coverage report generated in build/htmlcov/index.html${NC}"
         else
             pytest tests/ -v || EXIT_CODE=$?
         fi

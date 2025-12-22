@@ -4,7 +4,7 @@ Unit tests for input validation
 import pytest
 from pydantic import ValidationError
 
-from api import GenerateRequest
+from src.rest_api import GenerateRequest
 
 
 class TestEGRIDValidation:

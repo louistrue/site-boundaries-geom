@@ -42,7 +42,7 @@ docker stop $(docker ps -q --filter ancestor=site-boundaries-api)
 Ensure all files are committed and pushed:
 
 ```bash
-git add Dockerfile .dockerignore requirements.txt api.py
+git add Dockerfile .dockerignore requirements.txt src/
 git commit -m "Add secure Docker deployment configuration"
 git push
 ```
@@ -139,7 +139,7 @@ After deployment:
 
 ### Rate Limiting Too Strict
 
-- Adjust limits in `api.py` (search for `@limiter.limit`)
+- Adjust limits in `src/rest_api.py` (search for `@limiter.limit`)
 - Redeploy after changes
 
 ### Memory Issues

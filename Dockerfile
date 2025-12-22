@@ -45,11 +45,12 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
-COPY --chown=appuser:appgroup api.py combined_terrain.py terrain_loader.py workflow.py ./
+COPY --chown=appuser:appgroup src/ ./src/
 
 # Create temp directory for IFC file generation (writable by appuser)
 RUN mkdir -p /app/tmp && chown appuser:appgroup /app/tmp
 ENV TMPDIR=/app/tmp
+ENV PYTHONPATH=/app
 
 # Switch to non-root user
 USER appuser
@@ -63,5 +64,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import os, urllib.request; port=os.getenv('PORT', '8080'); urllib.request.urlopen(f'http://localhost:{port}/health')" || exit 1
 
 # Run with uvicorn
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn src.rest_api:app --host 0.0.0.0 --port ${PORT}"]
 

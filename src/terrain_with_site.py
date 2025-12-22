@@ -7,7 +7,7 @@ This script creates a single IFC file containing:
 - Site solid with smoothed surface, height-adjusted to align with terrain edges
 
 Usage:
-    python combined_terrain.py --egrid CH999979659148 --radius 500 --resolution 20 --output combined.ifc
+    python -m src.terrain_with_site --egrid CH999979659148 --radius 500 --resolution 20 --output combined.ifc
 """
 
 import numpy as np
@@ -301,7 +301,7 @@ def create_site_solid_coords(site_polygon, site_coords_3d, z_offset_adjustment=0
         smoothed_boundary_2d: List of (x, y) for smoothed boundary
         smoothed_boundary_z: List of Z values for smoothed boundary
     """
-    # Apply smoothing (same as workflow.py)
+    # Apply smoothing (same as site_solid.py)
     ext_coords = [(float(x), float(y), float(z)) for x, y, z in site_coords_3d]
     if ext_coords[0] == ext_coords[-1]:
         ext_coords = ext_coords[:-1]

@@ -37,6 +37,8 @@ test_docker_security.sh
 # Generated files
 *.ifc
 results/
+output/
+build/
 *.log
 
 # Documentation

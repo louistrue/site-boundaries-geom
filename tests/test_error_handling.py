@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 class TestExceptionHandling:
     """Test exception handling and error responses"""
     
-    @patch('api._run_generation')
+    @patch('src.rest_api._run_generation')
     def test_generate_timeout_error(self, mock_run, client, valid_request_payload):
         """Test handling of timeout errors"""
         import requests
@@ -18,7 +18,7 @@ class TestExceptionHandling:
         assert response.status_code == 504
         assert "timeout" in response.json()["detail"].lower()
     
-    @patch('api._run_generation')
+    @patch('src.rest_api._run_generation')
     def test_generate_http_error(self, mock_run, client, valid_request_payload):
         """Test handling of HTTP errors"""
         import requests
@@ -28,7 +28,7 @@ class TestExceptionHandling:
         assert response.status_code == 502
         assert "upstream" in response.json()["detail"].lower()
     
-    @patch('api._run_generation')
+    @patch('src.rest_api._run_generation')
     def test_generate_value_error(self, mock_run, client, valid_request_payload):
         """Test handling of value errors"""
         mock_run.side_effect = ValueError("Invalid EGRID")
@@ -37,7 +37,7 @@ class TestExceptionHandling:
         assert response.status_code == 400
         assert "invalid" in response.json()["detail"].lower()
     
-    @patch('api._run_generation')
+    @patch('src.rest_api._run_generation')
     def test_generate_generic_error(self, mock_run, client, valid_request_payload):
         """Test handling of generic errors"""
         mock_run.side_effect = Exception("Unexpected error")

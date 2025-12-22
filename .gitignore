@@ -4,12 +4,12 @@ __pycache__
 
 # Coverage reports
 .coverage
-coverage.xml
-htmlcov/
+build/
 .pytest_cache/
 
 # Test results
 results/
+output/
 *.ifc
 
 # IDE

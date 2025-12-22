@@ -18,7 +18,7 @@ os.environ["TMPDIR"] = str(Path(tempfile.gettempdir()) / "test_ifc_files")
 # Create test temp directory
 os.makedirs(os.environ["TMPDIR"], exist_ok=True)
 
-from api import app
+from src.rest_api import app
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from api import app, jobs
+from src.rest_api import app, jobs
 
 
 class TestHealthEndpoint:
@@ -29,7 +29,7 @@ class TestHealthEndpoint:
 class TestGenerateEndpoint:
     """Test /generate endpoint"""
     
-    @patch('api._run_generation')
+    @patch('src.rest_api._run_generation')
     def test_generate_success(self, mock_run, client, valid_request_payload, mock_combined_terrain_success):
         """Test successful generation"""
         # Create a temporary file for the mock
@@ -42,7 +42,7 @@ class TestGenerateEndpoint:
         mock_run.return_value = None  # Async function returns None
         
         # Mock the actual terrain generation
-        with patch('combined_terrain.run_combined_terrain_workflow') as mock_terrain:
+        with patch('src.terrain_with_site.run_combined_terrain_workflow') as mock_terrain:
             mock_terrain.return_value = tmp_file.name
             
             response = client.post("/generate", json=valid_request_payload)
