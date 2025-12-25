@@ -148,10 +148,18 @@ def _create_brep_from_citygml_faces(
             if len(face_points) < 3:
                 continue
             
-            # Remove duplicate closing point if present (first and last points are the same)
+            # Remove duplicate closing point if present (first and last points are effectively the same)
+            # Use tolerance for float comparisons
             points_to_use = face_points
-            if len(face_points) > 3 and face_points[0] == face_points[-1]:
-                points_to_use = face_points[:-1]
+            if len(face_points) > 3:
+                first = face_points[0]
+                last = face_points[-1]
+                # Check if last point is effectively duplicate of first (within tolerance)
+                tolerance = 1e-6
+                if (abs(first[0] - last[0]) < tolerance and 
+                    abs(first[1] - last[1]) < tolerance and 
+                    abs(first[2] - last[2]) < tolerance):
+                    points_to_use = face_points[:-1]
             
             # Apply offset and create IFC points
             local_points = [
@@ -254,17 +262,35 @@ def _create_footprint_from_citygml(
         # Use largest ground face as footprint
         largest_face = max(ground_faces, key=len)
         
+        # Remove duplicate closing point if present (first and last points are effectively the same)
+        # Use tolerance for float comparisons
+        points_to_use = largest_face
+        if len(largest_face) > 3:
+            first = largest_face[0]
+            last = largest_face[-1]
+            # Check if last point is effectively duplicate of first (within tolerance)
+            tolerance = 1e-6
+            if (abs(first[0] - last[0]) < tolerance and 
+                abs(first[1] - last[1]) < tolerance):
+                points_to_use = largest_face[:-1]
+        
         # Create 2D polyline
         points_2d = [
             model.createIfcCartesianPoint([
                 float(p[0] - offset_x),
                 float(p[1] - offset_y)
             ])
-            for p in largest_face[:-1]
+            for p in points_to_use
         ]
         
-        # Close the polyline
-        points_2d.append(points_2d[0])
+        # Close the polyline if not already closed (check by comparing coordinates)
+        if len(points_2d) > 0:
+            first_point = points_2d[0]
+            last_point = points_2d[-1]
+            tolerance = 1e-6
+            if (abs(first_point.Coordinates[0] - last_point.Coordinates[0]) > tolerance or
+                abs(first_point.Coordinates[1] - last_point.Coordinates[1]) > tolerance):
+                points_2d.append(points_2d[0])
         
         polyline = model.createIfcPolyLine(points_2d)
         

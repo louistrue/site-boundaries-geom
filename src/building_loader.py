@@ -562,15 +562,17 @@ class SwissBuildingLoader:
                 for poly in geom.geoms:
                     if hasattr(poly, "exterior"):
                         coords = list(poly.exterior.coords)
-                        if coords and len(coords[0]) > 2:
-                            # All coordinates should have Z if first one does
-                            z_values.extend([z for x, y, z in coords])
+                        # Check each coordinate individually for Z value
+                        for coord in coords:
+                            if len(coord) > 2:
+                                z_values.append(coord[2])
             elif hasattr(geom, "exterior"):
                 # Polygon - get Z values from exterior
                 coords = list(geom.exterior.coords)
-                if coords and len(coords[0]) > 2:
-                    # All coordinates should have Z if first one does
-                    z_values = [z for x, y, z in coords]
+                # Check each coordinate individually for Z value
+                for coord in coords:
+                    if len(coord) > 2:
+                        z_values.append(coord[2])
             
             # Calculate height
             height = None

@@ -9,6 +9,7 @@ import logging
 import tempfile
 import zipfile
 import os
+from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
@@ -149,8 +150,32 @@ class CityGMLBuildingLoader:
                     if chunk:
                         f.write(chunk)
             
+            # Safe extraction with path validation to prevent zip slip attacks
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(tmpdir)
+                tmpdir_path = Path(tmpdir).resolve()
+                for member in zf.namelist():
+                    # Skip directories
+                    if member.endswith('/'):
+                        continue
+                    
+                    # Compute destination path
+                    dest_path = (tmpdir_path / member).resolve()
+                    
+                    # Verify destination is inside tmpdir (prevent path traversal)
+                    try:
+                        dest_path.relative_to(tmpdir_path)
+                    except ValueError:
+                        # Path is outside tmpdir - skip this member
+                        logger.warning(f"Skipping suspicious zip member: {member}")
+                        continue
+                    
+                    # Create parent directories if needed
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Extract file safely
+                    with zf.open(member) as source:
+                        with open(dest_path, 'wb') as target:
+                            target.write(source.read())
             
             # Find GML file
             gml_file = None

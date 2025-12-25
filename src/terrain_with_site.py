@@ -140,16 +140,29 @@ def fetch_elevation_batch(coords, batch_size=50, delay=0.1, max_workers=15):
                     elevations[index] = elevation
                 else:
                     failed_count += 1
-                    # Use previous elevation if available, otherwise 0.0
-                    elevations[index] = elevations[index - 1] if index > 0 and elevations[index - 1] is not None else 0.0
+                    # Set to None for post-processing - don't access neighbors here due to race condition
+                    elevations[index] = None
             except Exception:
                 failed_count += 1
-                elevations[index] = elevations[index - 1] if index > 0 and elevations[index - 1] is not None else 0.0
+                # Set to None for post-processing - don't access neighbors here due to race condition
+                elevations[index] = None
             
             completed += 1
             if completed % batch_size == 0:
                 pct = completed / total * 100
                 print(f"  Progress: {completed}/{total} ({pct:.1f}%)")
+    
+    # Post-processing: replace None values with nearest previous non-None value (or 0.0)
+    # This is race-free since all async operations have completed
+    for i in range(total):
+        if elevations[i] is None:
+            # Find nearest previous non-None value
+            fallback_value = 0.0
+            for j in range(i - 1, -1, -1):
+                if elevations[j] is not None:
+                    fallback_value = elevations[j]
+                    break
+            elevations[i] = fallback_value
     
     if failed_count > 0:
         print(f"  Warning: {failed_count} points failed to fetch elevation")
