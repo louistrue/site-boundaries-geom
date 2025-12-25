@@ -9,9 +9,17 @@ import logging
 import tempfile
 import zipfile
 import os
-import xml.etree.ElementTree as ET
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+try:
+    from defusedxml.ElementTree import parse as safe_parse
+    XML_SAFE = True
+except ImportError:
+    import xml.etree.ElementTree as ET
+    safe_parse = ET.parse
+    XML_SAFE = False
+    logging.warning("defusedxml not available - using standard XML parser (less secure)")
 
 import requests
 from shapely.geometry import Polygon, box, Point
@@ -172,7 +180,7 @@ class CityGMLBuildingLoader:
         Returns:
             List of CityGMLBuilding objects
         """
-        tree = ET.parse(gml_path)
+        tree = safe_parse(gml_path)
         root = tree.getroot()
         
         # Define namespaces

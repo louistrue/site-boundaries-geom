@@ -163,6 +163,9 @@ class SwissBuildingLoader:
         Raises:
             requests.RequestException: If all retries fail
         """
+        if self.retry_count < 1:
+            raise ValueError("retry_count must be at least 1")
+        
         last_exception = None
 
         for attempt in range(self.retry_count):
@@ -183,6 +186,8 @@ class SwissBuildingLoader:
                     # Exponential backoff
                     time.sleep(2 ** attempt)
 
+        if last_exception is None:
+            raise RuntimeError("Request failed but no exception was captured")
         raise last_exception
 
     def get_buildings_wfs(
@@ -319,6 +324,8 @@ class SwissBuildingLoader:
 
             buildings = []
             for result in data.get("results", []):
+                if max_features > 0 and len(buildings) >= max_features:
+                    break
                 building = self._parse_rest_result(result)
                 if building:
                     buildings.append(building)
@@ -555,11 +562,14 @@ class SwissBuildingLoader:
                 for poly in geom.geoms:
                     if hasattr(poly, "exterior"):
                         coords = list(poly.exterior.coords)
-                        z_values.extend([z for x, y, z in coords if len(coords[0]) > 2])
+                        if coords and len(coords[0]) > 2:
+                            # All coordinates should have Z if first one does
+                            z_values.extend([z for x, y, z in coords])
             elif hasattr(geom, "exterior"):
                 # Polygon - get Z values from exterior
                 coords = list(geom.exterior.coords)
-                if len(coords) > 0 and len(coords[0]) > 2:
+                if coords and len(coords[0]) > 2:
+                    # All coordinates should have Z if first one does
                     z_values = [z for x, y, z in coords]
             
             # Calculate height

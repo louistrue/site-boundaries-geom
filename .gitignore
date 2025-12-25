@@ -7,11 +7,6 @@ __pycache__
 build/
 .pytest_cache/
 
-# Test results
-results/
-output/
-*.ifc
-
 # IDE
 .vscode/
 .idea/

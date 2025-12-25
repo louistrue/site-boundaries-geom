@@ -172,7 +172,7 @@ def run_terrain_with_buildings_workflow(
             logger.error(f"Failed to load buildings: {e}")
             print(f"\n⚠️  Building loading failed: {e}")
             print("   Continuing without buildings...")
-            buildings = []
+            citygml_buildings = []
 
     # Step 3: Add buildings to IFC if any were loaded
     if citygml_buildings:
@@ -316,10 +316,10 @@ def main():
             attach_to_solid=args.attach_to_solid,
             include_terrain=not args.no_terrain,
             include_site_solid=not args.no_site,
-        include_buildings=args.include_buildings,
-        building_buffer_m=args.building_buffer,
-        buildings_on_site_only=not args.buildings_full_radius,
-        output_path=args.output,
+            include_buildings=args.include_buildings,
+            building_buffer_m=args.building_buffer,
+            buildings_on_site_only=not args.buildings_full_radius,
+            output_path=args.output,
         )
 
         print("\n✅ Workflow completed successfully!")

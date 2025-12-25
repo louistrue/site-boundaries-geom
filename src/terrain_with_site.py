@@ -21,7 +21,10 @@ import argparse
 import time
 import sys
 import math
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_boundary_by_egrid(egrid):
@@ -815,7 +818,7 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
         if hasattr(entity, 'OwnerHistory') and entity.OwnerHistory is None:
             try:
                 entity.OwnerHistory = owner_history
-            except:
+            except Exception:
                 pass  # Some entities may not accept OwnerHistory
     
     if return_model:

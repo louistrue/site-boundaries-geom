@@ -148,6 +148,11 @@ def _create_brep_from_citygml_faces(
             if len(face_points) < 3:
                 continue
             
+            # Remove duplicate closing point if present (first and last points are the same)
+            points_to_use = face_points
+            if len(face_points) > 3 and face_points[0] == face_points[-1]:
+                points_to_use = face_points[:-1]
+            
             # Apply offset and create IFC points
             local_points = [
                 model.createIfcCartesianPoint([
@@ -155,7 +160,7 @@ def _create_brep_from_citygml_faces(
                     float(p[1] - offset_y),
                     float(p[2] - offset_z)
                 ])
-                for p in face_points[:-1]  # Remove duplicate closing point
+                for p in points_to_use
             ]
             
             if len(local_points) < 3:

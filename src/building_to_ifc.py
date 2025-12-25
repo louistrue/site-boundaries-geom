@@ -562,8 +562,19 @@ def create_building_footprint_curve(
         return None
     
     try:
-        coords = list(building.geometry.exterior.coords)
-    except:
+        # Handle both Polygon and MultiPolygon geometries
+        if hasattr(building.geometry, 'exterior'):
+            coords = list(building.geometry.exterior.coords)
+        elif hasattr(building.geometry, 'geoms'):
+            # MultiPolygon - use first polygon's exterior
+            if building.geometry.geoms:
+                coords = list(building.geometry.geoms[0].exterior.coords)
+            else:
+                return None
+        else:
+            return None
+    except (AttributeError, TypeError) as e:
+        logger.debug(f"Could not extract coordinates from geometry: {e}")
         return None
     
     if len(coords) < 3:
