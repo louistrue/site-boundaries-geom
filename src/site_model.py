@@ -102,7 +102,7 @@ def run_combined_terrain_workflow(
 
     print(f"\nFetching site boundary elevations ({len(site_coords_2d)} points)...")
     site_elevations = fetch_elevation_batch(site_coords_2d)
-    site_coords_3d = [(x, y, z) for (x, y), z in zip(site_coords_2d, site_elevations)]
+    site_coords_3d = [(x, y, z) for (x, y), z in zip(site_coords_2d, site_elevations, strict=True)]
 
     # Create terrain if requested
     if include_terrain:
@@ -149,7 +149,7 @@ def run_combined_terrain_workflow(
         if roads and embed_roads_in_terrain:
             print("\nApplying road recesses to terrain...")
             road_polygons, road_edge_coords, road_edge_elevations = apply_road_recesses_to_terrain(
-                terrain_coords, terrain_elevations, roads, fetch_elevations_func=fetch_elevation_batch
+                roads, fetch_elevations_func=fetch_elevation_batch
             )
 
         # Triangulate terrain with cutouts

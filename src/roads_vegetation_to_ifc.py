@@ -140,8 +140,7 @@ def road_to_ifc(
     offset_x: float = 0.0,
     offset_y: float = 0.0,
     offset_z: float = 0.0,
-    elevations: Optional[List[float]] = None,
-    recess_depth: float = 0.0
+    elevations: Optional[List[float]] = None
 ) -> Optional[ifcopenshell.entity_instance]:
     """
     Convert a RoadFeature to an IfcGeographicElement with road geometry
@@ -153,7 +152,6 @@ def road_to_ifc(
         body_context: IFC Body context
         offset_x, offset_y, offset_z: Project origin offsets
         elevations: List of elevations for each road coordinate (terrain-projected)
-        recess_depth: How much the terrain is recessed for roads (roads sit in recess)
 
     Returns:
         IfcGeographicElement for road or None if failed
@@ -408,8 +406,7 @@ def roads_to_ifc(
     offset_x: float = 0.0,
     offset_y: float = 0.0,
     offset_z: float = 0.0,
-    fetch_elevations_func=None,
-    recess_depth: float = 0.0
+    fetch_elevations_func=None
 ) -> List[ifcopenshell.entity_instance]:
     """
     Convert multiple roads to IFC with terrain-projected elevations
@@ -421,7 +418,6 @@ def roads_to_ifc(
         body_context: IFC Body context
         offset_x, offset_y, offset_z: Project origin offsets
         fetch_elevations_func: Function to fetch elevations for coordinates (optional)
-        recess_depth: How much the terrain is recessed for roads (roads sit in recess)
 
     Returns:
         List of created IfcGeographicElement entities
@@ -463,8 +459,7 @@ def roads_to_ifc(
     for road, elevations in zip(roads, road_elevations):
         ifc_road = road_to_ifc(
             model, road, site, body_context,
-            offset_x, offset_y, offset_z, elevations,
-            recess_depth=recess_depth
+            offset_x, offset_y, offset_z, elevations
         )
         if ifc_road:
             ifc_roads.append(ifc_road)
@@ -666,13 +661,13 @@ def _create_water_surface_3d(
     
     if not all_faces:
         return None
-    
-    # Create faceted brep
-    closed_shell = model.createIfcClosedShell(all_faces)
-    brep = model.createIfcFacetedBrep(closed_shell)
-    
+
+    # Create open shell for surface (not a closed volume)
+    open_shell = model.createIfcOpenShell(all_faces)
+    surface_model = model.createIfcShellBasedSurfaceModel([open_shell])
+
     return model.createIfcShapeRepresentation(
-        body_context, "Body", "Brep", [brep]
+        body_context, "Body", "SurfaceModel", [surface_model]
     )
 
 
@@ -700,13 +695,13 @@ def _create_water_polygon_surface(
     
     poly_loop = model.createIfcPolyLoop(points)
     face = model.createIfcFace([model.createIfcFaceOuterBound(poly_loop, True)])
-    
-    # Create closed shell and brep
-    closed_shell = model.createIfcClosedShell([face])
-    brep = model.createIfcFacetedBrep(closed_shell)
-    
+
+    # Create open shell for surface (not a closed volume)
+    open_shell = model.createIfcOpenShell([face])
+    surface_model = model.createIfcShellBasedSurfaceModel([open_shell])
+
     return model.createIfcShapeRepresentation(
-        body_context, "Body", "Brep", [brep]
+        body_context, "Body", "SurfaceModel", [surface_model]
     )
 
 

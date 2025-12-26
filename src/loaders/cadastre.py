@@ -30,7 +30,7 @@ def fetch_boundary_by_egrid(egrid: str) -> Tuple[Optional[object], Optional[Dict
     }
     
     print(f"Fetching boundary for EGRID {egrid}...")
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=60)
     response.raise_for_status()
     data = response.json()
     

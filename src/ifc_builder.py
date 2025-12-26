@@ -427,8 +427,7 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
             ifc_roads = roads_to_ifc(
                 model, roads, site, body_context,
                 offset_x, offset_y, offset_z,
-                fetch_elevations_func=fetch_elevation_batch,
-                recess_depth=road_recess_depth
+                fetch_elevations_func=fetch_elevation_batch
             )
             print(f"  Added {len(ifc_roads)} road elements (in {road_recess_depth}m recess)")
         except Exception as e:
@@ -495,8 +494,10 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
         if hasattr(entity, 'OwnerHistory') and entity.OwnerHistory is None:
             try:
                 entity.OwnerHistory = owner_history
-            except Exception:
-                pass  # Some entities may not accept OwnerHistory
+            except Exception as e:
+                # Some entities may not accept OwnerHistory (e.g., geometric representations)
+                # This is expected behavior for certain IFC entity types
+                pass
     
     if return_model:
         print(f"\nIFC model created in memory")

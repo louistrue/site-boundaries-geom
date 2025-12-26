@@ -51,18 +51,15 @@ def create_circular_terrain_grid(center_x: float, center_y: float, radius: float
     return coords, (minx, miny, maxx, maxy)
 
 
-def apply_road_recesses_to_terrain(coords: List[Tuple[float, float]], elevations: List[float], 
-                                   roads, fetch_elevations_func=None):
+def apply_road_recesses_to_terrain(roads, fetch_elevations_func=None):
     """
     Create road polygons and sample edge points for clean terrain mesh integration.
     Edge points are added to terrain mesh so triangulation naturally follows road boundaries.
-    
+
     Args:
-        coords: List of (x, y) coordinates for terrain grid
-        elevations: List of elevations corresponding to coords
         roads: List of RoadFeature objects
         fetch_elevations_func: Function to fetch elevations for edge points
-    
+
     Returns:
         road_polygons: Combined road polygon for centroid-based removal
         road_edge_coords: List of (x, y) coordinates along road edges

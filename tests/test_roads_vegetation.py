@@ -5,17 +5,17 @@ import pytest
 from unittest.mock import patch, MagicMock
 from shapely.geometry import Polygon, LineString, Point
 
-from src.road_loader import (
+from src.loaders.road import (
     SwissRoadLoader,
     RoadFeature,
     get_roads_around_egrid,
     get_roads_in_bbox
 )
-from src.vegetation_loader import (
-    SwissVegetationLoader,
-    VegetationFeature,
-    get_vegetation_around_egrid,
-    get_vegetation_in_bbox
+from src.loaders.forest import (
+    SwissForestLoader,
+    TreeFeature,
+    get_trees_around_egrid,
+    get_trees_in_bbox
 )
 
 
@@ -29,8 +29,8 @@ class TestRoadLoader:
         assert loader.retry_count == 3
         assert loader.REST_BASE == "https://api3.geo.admin.ch/rest/services"
     
-    @patch('src.road_loader.SwissRoadLoader._request_with_retry')
-    @patch('src.road_loader.SwissRoadLoader.get_roads_on_parcel')
+    @patch('src.loaders.road.SwissRoadLoader._request_with_retry')
+    @patch('src.loaders.road.SwissRoadLoader.get_roads_on_parcel')
     def test_get_roads_around_egrid(self, mock_get_roads, mock_request, valid_egrid):
         """Test getting roads around an EGRID"""
         # Mock road features
@@ -59,7 +59,7 @@ class TestRoadLoader:
         assert "Hauptstrasse" in stats["road_classes"]
         assert "Nebenstrasse" in stats["road_classes"]
     
-    @patch('src.road_loader.SwissRoadLoader._request_with_retry')
+    @patch('src.loaders.road.SwissRoadLoader._request_with_retry')
     def test_get_roads_rest(self, mock_request):
         """Test REST API road fetching"""
         # Mock API response
@@ -131,13 +131,13 @@ class TestVegetationLoader:
     
     def test_vegetation_loader_initialization(self):
         """Test that vegetation loader initializes correctly"""
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         assert loader.timeout == 60
         assert loader.retry_count == 3
         assert loader.REST_BASE == "https://api3.geo.admin.ch/rest/services"
     
-    @patch('src.vegetation_loader.SwissVegetationLoader.get_vegetation_on_parcel')
-    def test_get_vegetation_around_egrid(self, mock_get_vegetation, valid_egrid):
+    @patch('src.loaders.forest.SwissForestLoader.get_vegetation_on_parcel')
+    def test_get_trees_around_egrid(self, mock_get_vegetation, valid_egrid):
         """Test getting vegetation around an EGRID"""
         # Mock vegetation features with canopy_area set
         veg1_geom = Polygon([(2675000, 1245000), (2675100, 1245000), 
@@ -145,14 +145,14 @@ class TestVegetationLoader:
         veg2_geom = Polygon([(2675100, 1245100), (2675200, 1245100),
                               (2675200, 1245200), (2675100, 1245200)])
         
-        mock_veg1 = VegetationFeature(
+        mock_veg1 = TreeFeature(
             id="veg1",
             geometry=veg1_geom,
             vegetation_type="Forest",
             height=15.0,
             canopy_area=veg1_geom.area
         )
-        mock_veg2 = VegetationFeature(
+        mock_veg2 = TreeFeature(
             id="veg2",
             geometry=veg2_geom,
             vegetation_type="Individual tree",
@@ -162,10 +162,10 @@ class TestVegetationLoader:
         mock_get_vegetation.return_value = [mock_veg1, mock_veg2]
         
         # Test the convenience function
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         loader.get_vegetation_on_parcel = mock_get_vegetation
         
-        vegetation, stats = get_vegetation_around_egrid(valid_egrid, buffer_m=10)
+        vegetation, stats = get_trees_around_egrid(valid_egrid, buffer_m=10)
         
         assert len(vegetation) == 2
         assert stats["count"] == 2
@@ -174,7 +174,7 @@ class TestVegetationLoader:
         assert "Forest" in stats["vegetation_types"]
         assert "Individual tree" in stats["vegetation_types"]
     
-    @patch('src.vegetation_loader.SwissVegetationLoader._request_with_retry')
+    @patch('src.loaders.forest.SwissForestLoader._request_with_retry')
     def test_get_vegetation_rest(self, mock_request):
         """Test REST API vegetation fetching"""
         # Mock API response
@@ -202,7 +202,7 @@ class TestVegetationLoader:
         }
         mock_request.return_value = mock_response
         
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         bbox = (2675000, 1245000, 2675100, 1245100)
         vegetation = loader.get_vegetation_rest(bbox)
         
@@ -213,17 +213,17 @@ class TestVegetationLoader:
     
     def test_vegetation_statistics(self):
         """Test vegetation statistics calculation"""
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         
         # Create polygons with known areas
-        veg1 = VegetationFeature(
+        veg1 = TreeFeature(
             id="veg1",
             geometry=Polygon([(0, 0), (100, 0), (100, 100), (0, 100)]),  # 10000 m²
             vegetation_type="Forest",
             height=15.0,
             canopy_area=10000.0
         )
-        veg2 = VegetationFeature(
+        veg2 = TreeFeature(
             id="veg2",
             geometry=Polygon([(0, 0), (50, 0), (50, 50), (0, 50)]),  # 2500 m²
             vegetation_type="Individual tree",
@@ -244,7 +244,7 @@ class TestVegetationLoader:
     
     def test_vegetation_statistics_empty(self):
         """Test vegetation statistics with empty list"""
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         stats = loader.get_vegetation_statistics([])
         
         assert stats["count"] == 0
@@ -300,7 +300,7 @@ class TestVegetationLoaderIntegration:
     @pytest.mark.integration
     def test_get_vegetation_for_test_egrid(self, valid_egrid):
         """Test getting vegetation/trees for the test EGRID"""
-        loader = SwissVegetationLoader()
+        loader = SwissForestLoader()
         
         # This will make a real API call
         # Note: The API may return 400 if the layer is not available or the format is wrong
@@ -314,7 +314,7 @@ class TestVegetationLoaderIntegration:
             # If we got vegetation, check their structure
             if vegetation:
                 for veg in vegetation:
-                    assert isinstance(veg, VegetationFeature)
+                    assert isinstance(veg, TreeFeature)
                     assert veg.id is not None
                     assert veg.geometry is not None
                     assert hasattr(veg.geometry, 'area')
@@ -328,10 +328,10 @@ class TestVegetationLoaderIntegration:
             pytest.skip(f"Vegetation API not available or returned error: {e}")
     
     @pytest.mark.integration
-    def test_get_vegetation_around_egrid_integration(self, valid_egrid):
+    def test_get_trees_around_egrid_integration(self, valid_egrid):
         """Test the convenience function for getting vegetation around EGRID"""
         try:
-            vegetation, stats = get_vegetation_around_egrid(valid_egrid, buffer_m=10)
+            vegetation, stats = get_trees_around_egrid(valid_egrid, buffer_m=10)
             
             assert isinstance(vegetation, list)
             assert isinstance(stats, dict)
@@ -354,7 +354,7 @@ class TestRoadVegetationCombined:
         
         # Get vegetation (may fail if API is not available)
         try:
-            vegetation, veg_stats = get_vegetation_around_egrid(valid_egrid, buffer_m=10)
+            vegetation, veg_stats = get_trees_around_egrid(valid_egrid, buffer_m=10)
             veg_available = True
         except Exception as e:
             # If vegetation API fails, continue with roads only

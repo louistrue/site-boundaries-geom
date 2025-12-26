@@ -5,22 +5,39 @@ Fetches elevation data from Swiss geo.admin.ch height service.
 """
 
 import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
+from threading import Lock
+
+# Rate limiting: 5 requests per second max
+_last_request_time = 0
+_request_lock = Lock()
 
 
 def _fetch_single_elevation(coord: Tuple[float, float]) -> float:
     """
-    Fetch elevation for a single coordinate.
-    
+    Fetch elevation for a single coordinate with rate limiting.
+
     Args:
         coord: Tuple of (x, y) coordinates
-        
+
     Returns:
         Elevation value or None on failure
     """
+    global _last_request_time
+
     x, y = coord
     url = "https://api3.geo.admin.ch/rest/services/height"
+
+    # Rate limiting: max 5 requests per second
+    with _request_lock:
+        current_time = time.time()
+        time_since_last = current_time - _last_request_time
+        if time_since_last < 0.2:  # 0.2 seconds = 5 req/s
+            time.sleep(0.2 - time_since_last)
+        _last_request_time = time.time()
+
     try:
         res = requests.get(url, params={"easting": x, "northing": y, "sr": "2056"}, timeout=10)
         res.raise_for_status()
@@ -78,14 +95,17 @@ def fetch_elevation_batch(coords: List[Tuple[float, float]], batch_size: int = 5
                 pct = completed / total * 100
                 print(f"  Progress: {completed}/{total} ({pct:.1f}%)")
     
-    # Post-processing: replace None values with nearest previous non-None value (or 0.0)
+    # Post-processing: replace None values with average of successful elevations
+    successful_elevations = [e for e in elevations if e is not None]
+    if successful_elevations:
+        fallback_value = sum(successful_elevations) / len(successful_elevations)
+    else:
+        # If all failed, use a reasonable Swiss elevation (500m typical lowland)
+        fallback_value = 500.0
+        print("  Warning: All elevation fetches failed, using fallback of 500.0m")
+
     for i in range(total):
         if elevations[i] is None:
-            fallback_value = 0.0
-            for j in range(i - 1, -1, -1):
-                if elevations[j] is not None:
-                    fallback_value = elevations[j]
-                    break
             elevations[i] = fallback_value
     
     if failed_count > 0:
