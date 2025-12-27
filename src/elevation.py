@@ -5,23 +5,28 @@ Fetches elevation data from Swiss geo.admin.ch height service.
 """
 
 import requests
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # Reusable session for connection pooling (much faster!)
 _session = None
+_session_lock = threading.Lock()
 
 def _get_session():
     global _session
     if _session is None:
-        _session = requests.Session()
-        # Enable connection pooling
-        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
-        _session.mount('https://', adapter)
+        with _session_lock:
+            # Double-check pattern: another thread may have created it while we waited
+            if _session is None:
+                _session = requests.Session()
+                # Enable connection pooling
+                adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
+                _session.mount('https://', adapter)
     return _session
 
 
-def _fetch_single_elevation(coord: Tuple[float, float]) -> float:
+def _fetch_single_elevation(coord: Tuple[float, float]) -> Optional[float]:
     """
     Fetch elevation for a single coordinate.
 

@@ -71,7 +71,7 @@ def apply_water_cutouts_to_terrain(waters, terrain_coords=None, terrain_elevatio
         water_edge_elevations: List of elevations for water edge points
     """
     from shapely.ops import unary_union
-    from shapely.geometry import LineString, Polygon
+    from shapely.geometry import LineString
     from scipy.interpolate import LinearNDInterpolator
     
     EDGE_SAMPLE_INTERVAL = 2.0  # Sample every 2m along water edges for very smooth boundaries
@@ -500,25 +500,5 @@ def _densify_ring(ring, max_segment_length: float = 10.0):
     new_coords.append(coords[-1])
     
     return LineString(new_coords)
-
-
-def _sample_polygon_edges(geom, interval: float) -> List[Tuple[float, float]]:
-    """Sample points along polygon edges at given interval."""
-    points = []
-    
-    def sample_ring(ring):
-        length = ring.length
-        for dist in np.arange(0, length, interval):
-            pt = ring.interpolate(dist)
-            points.append((pt.x, pt.y))
-    
-    if geom.geom_type == 'Polygon':
-        sample_ring(geom.exterior)
-    elif geom.geom_type == 'MultiPolygon':
-        for poly in geom.geoms:
-            sample_ring(poly.exterior)
-    
-    return points
-
 
 

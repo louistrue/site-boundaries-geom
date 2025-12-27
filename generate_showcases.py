@@ -14,9 +14,10 @@ import os
 from pathlib import Path
 
 # Famous Swiss locations for showcases
-# Note: Building data (CityGML) availability varies by region/year
-# - 2019 and earlier: CityGML available (full 3D buildings)
-# - 2020 and later: Only FileGDB available (buildings may be missing)
+# Note: Building data availability varies by format:
+# - Some regions have CityGML format (2019 and earlier surveys)
+# - Newer regions (2020+) have FileGDB format
+# The loader automatically handles both formats for full 3D building support.
 LOCATIONS = [
     {
         "name": "bern_bundeshaus",
@@ -41,12 +42,12 @@ LOCATIONS = [
     {
         "name": "geneva_molard",
         "address": "Place du Molard, Genève",
-        "description": "Old Town Square & Lake Geneva (no 3D buildings available)"
+        "description": "Old Town Square & Lake Geneva"
     },
     {
         "name": "lausanne_oldtown",
         "address": "Place de la Palud 2, Lausanne",
-        "description": "Historic Old Town & Fountain (no 3D buildings available)"
+        "description": "Historic Old Town & Fountain"
     },
     {
         "name": "interlaken_hoeheweg",

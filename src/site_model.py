@@ -356,11 +356,14 @@ def run_combined_terrain_workflow(
             from src.loaders.building import CityGMLBuildingLoader
             loader = CityGMLBuildingLoader()
             bounds = circle_bounds if circle_bounds else site_geometry.bounds
-            buildings = loader.get_buildings_in_bbox(bounds, max_tiles=5)  # Allow more tiles for better coverage
+            # Use fewer tiles for faster generation (GDB files are large ~40MB each)
+            # Quick mode (resolution >= 15) uses only 1 tile for speed
+            max_tiles = 1 if resolution >= 15 else 5
+            buildings = loader.get_buildings_in_bbox(bounds, max_tiles=max_tiles)
             print(f"  Found {len(buildings)} buildings")
             if buildings:
                 for i, b in enumerate(buildings[:5]):
-                    print(f"    {i+1}. {b.id} - {b.building_type if b.building_type else 'unknown'} - {len(b.faces)} faces")
+                    print(f"    {i+1}. {b.id[:40]}... - {b.building_type if b.building_type else 'unknown'} - {len(b.faces)} faces")
         except Exception as e:
             logger.exception("Error loading buildings")
             buildings = None

@@ -248,9 +248,9 @@ def road_to_ifc(
                 float(y - offset_y),
                 float(z - offset_z + z_adjustment)
             ])
-            for (x, y), z in zip(coords, elevations)
+            for (x, y), z in zip(coords, elevations, strict=True)
         ]
-        coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords, elevations)]
+        coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords, elevations, strict=True)]
     else:
         # Fallback to flat elevation (not terrain-projected)
         default_z = z_adjustment
@@ -485,7 +485,7 @@ def roads_to_ifc(
         road_elevations = [None] * len(roads)
     
     # Create IFC elements for each road
-    for road, elevations in zip(roads, road_elevations):
+    for road, elevations in zip(roads, road_elevations, strict=True):
         ifc_road = road_to_ifc(
             model, road, site, body_context,
             offset_x, offset_y, offset_z, elevations
@@ -584,7 +584,7 @@ def water_to_ifc(
         
         # Create 3D coordinates
         if elevations and len(elevations) == len(coords):
-            coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords, elevations)]
+            coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords, elevations, strict=True)]
         else:
             # Fallback to flat elevation
             default_z = offset_z + z_adjustment
@@ -607,7 +607,7 @@ def water_to_ifc(
         
         # Get elevation (use centroid if no per-vertex elevations)
         if elevations and len(elevations) >= len(coords_2d):
-            coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords_2d, elevations)]
+            coords_3d = [(x, y, z + z_adjustment) for (x, y), z in zip(coords_2d, elevations, strict=True)]
         else:
             # Use single elevation from attributes or default
             elev = water.attributes.get('elevation', offset_z) if water.attributes else offset_z
@@ -743,46 +743,35 @@ def _add_water_properties(
     water: WaterFeature
 ):
     """Add property sets to water element."""
-    try:
-        # Create property set
-        pset = ifcopenshell.api.run(
-            "pset.add_pset",
-            model,
-            product=ifc_water,
-            name="Pset_WaterProperties"
-        )
-        
-        # Add properties
-        props = []
-        if water.water_type:
-            props.append(model.createIfcPropertySingleValue(
-                "WaterType", None, model.create_entity("IfcLabel", water.water_type), None
-            ))
-        if water.name:
-            props.append(model.createIfcPropertySingleValue(
-                "Name", None, model.create_entity("IfcLabel", water.name), None
-            ))
-        if water.gewiss_number is not None:
-            props.append(model.createIfcPropertySingleValue(
-                "GEWISSNumber", None, model.create_entity("IfcInteger", water.gewiss_number), None
-            ))
-        if water.width:
-            props.append(model.createIfcPropertySingleValue(
-                "Width", None, model.create_entity("IfcLengthMeasure", water.width), None
-            ))
-        props.append(model.createIfcPropertySingleValue(
-            "IsUnderground", None, model.create_entity("IfcBoolean", water.is_underground), None
-        ))
-        
-        if props:
-            ifcopenshell.api.run(
-                "pset.edit_pset",
-                model,
-                pset=pset,
-                properties=props
-            )
-    except Exception as e:
-        logger.debug(f"Could not add water properties: {e}")
+    pset = ifcopenshell.api.run(
+        "pset.add_pset",
+        model,
+        product=ifc_water,
+        name="Pset_WaterProperties"
+    )
+
+    properties = {
+        "IsUnderground": water.is_underground
+    }
+
+    if water.water_type:
+        properties["WaterType"] = water.water_type
+
+    if water.name:
+        properties["Name"] = water.name
+
+    if water.gewiss_number is not None:
+        properties["GEWISSNumber"] = water.gewiss_number
+
+    if water.width:
+        properties["Width"] = water.width
+
+    ifcopenshell.api.run(
+        "pset.edit_pset",
+        model,
+        pset=pset,
+        properties=properties
+    )
 
 
 def waters_to_ifc(
@@ -851,7 +840,7 @@ def waters_to_ifc(
         water_elevations = [None] * len(waters)
     
     # Create IFC elements for each water feature
-    for water, elevations in zip(waters, water_elevations):
+    for water, elevations in zip(waters, water_elevations, strict=True):
         ifc_water = water_to_ifc(
             model, water, site, body_context,
             offset_x, offset_y, offset_z, elevations
@@ -1508,7 +1497,7 @@ def vegetation_to_ifc_batch(
         veg_elevations = [base_elevation] * len(vegetation_list)
     
     ifc_vegetation_list = []
-    for vegetation, elev in zip(vegetation_list, veg_elevations):
+    for vegetation, elev in zip(vegetation_list, veg_elevations, strict=True):
         ifc_veg = vegetation_to_ifc(
             model, vegetation, site, body_context,
             offset_x, offset_y, offset_z, elev
@@ -1757,9 +1746,6 @@ def forest_to_ifc(
     Returns:
         List of created IfcGeographicElement entities
     """
-    global _tree_type_cache
-    _tree_type_cache.clear()  # Clear cache for new model
-    
     if not forest_points:
         return []
     
