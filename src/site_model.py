@@ -31,6 +31,8 @@ def run_combined_terrain_workflow(
     include_forest=False,
     include_water=False,
     include_buildings=False,
+    include_railways=False,
+    include_bridges=False,
     road_buffer_m=100.0,
     forest_spacing=20.0,
     forest_threshold=30.0,
@@ -56,6 +58,8 @@ def run_combined_terrain_workflow(
         include_forest: Include forest trees and hedges
         include_water: Include water features
         include_buildings: Include buildings from CityGML
+        include_railways: Include railway tracks
+        include_bridges: Include bridges
         road_buffer_m: Buffer distance for road search (meters)
         forest_spacing: Spacing between forest sample points (meters) (TODO: not yet implemented - kept for compatibility)
         forest_threshold: Minimum forest coverage to place tree (0-100) (TODO: not yet implemented - kept for compatibility)
@@ -99,13 +103,20 @@ def run_combined_terrain_workflow(
     # Initialize variables
     terrain_triangles = None
     site_solid_data = None
-    circle_bounds = None
     terrain_coords = None
     terrain_elevations = None
     site_coords_3d = None
     z_offset = None
     roads = None  # Initialize roads variable
     waters = None  # Initialize waters variable (loaded early for terrain cutouts)
+    
+    # Calculate circle_bounds early - used for water/road/forest loading even if terrain disabled
+    circle_bounds = (
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius
+    )
 
     # Get site boundary 3D coordinates
     ring = site_geometry.exterior
@@ -122,7 +133,7 @@ def run_combined_terrain_workflow(
 
     # Create terrain if requested
     if include_terrain:
-        terrain_coords, circle_bounds = create_circular_terrain_grid(
+        terrain_coords, _ = create_circular_terrain_grid(
             center_x, center_y, radius=radius, resolution=resolution
         )
 
@@ -349,6 +360,48 @@ def run_combined_terrain_workflow(
             logger.exception("Error loading water")
             waters = None
 
+    railways = None
+    if include_railways:
+        print(f"\nLoading railways (radius: {radius}m)...")
+        try:
+            from src.loaders.railway import SwissRailwayLoader
+            loader = SwissRailwayLoader()
+            bounds = circle_bounds if circle_bounds else site_geometry.bounds
+            railways = loader.get_railways_in_bbox(bounds)
+            print(f"  Found {len(railways)} railway segments")
+            if railways:
+                railway_types = {}
+                for r in railways:
+                    rt = r.railway_type or "unknown"
+                    railway_types[rt] = railway_types.get(rt, 0) + 1
+                print("  Railway types:")
+                for rt, count in railway_types.items():
+                    print(f"    - {rt}: {count}")
+        except Exception as e:
+            logger.exception("Error loading railways")
+            railways = None
+
+    bridges = None
+    if include_bridges:
+        print(f"\nLoading bridges (radius: {radius}m)...")
+        try:
+            from src.loaders.bridge import SwissBridgeLoader
+            loader = SwissBridgeLoader()
+            bounds = circle_bounds if circle_bounds else site_geometry.bounds
+            bridges = loader.get_bridges_in_bbox(bounds)
+            print(f"  Found {len(bridges)} bridges")
+            if bridges:
+                carries_types = {}
+                for b in bridges:
+                    ct = b.carries or "unknown"
+                    carries_types[ct] = carries_types.get(ct, 0) + 1
+                print("  Bridge types:")
+                for ct, count in carries_types.items():
+                    print(f"    - {ct}: {count}")
+        except Exception as e:
+            logger.exception("Error loading bridges")
+            bridges = None
+
     buildings = None
     if include_buildings:
         print(f"\nLoading buildings...")
@@ -356,9 +409,9 @@ def run_combined_terrain_workflow(
             from src.loaders.building import CityGMLBuildingLoader
             loader = CityGMLBuildingLoader()
             bounds = circle_bounds if circle_bounds else site_geometry.bounds
-            # Use fewer tiles for faster generation (GDB files are large ~40MB each)
-            # Quick mode (resolution >= 15) uses only 1 tile for speed
-            max_tiles = 1 if resolution >= 15 else 5
+            # Use only 1 tile to save disk space (GDB files are large ~40MB each)
+            # One tile typically contains enough buildings for most areas
+            max_tiles = 1
             buildings = loader.get_buildings_in_bbox(bounds, max_tiles=max_tiles)
             print(f"  Found {len(buildings)} buildings")
             if buildings:
@@ -374,6 +427,7 @@ def run_combined_terrain_workflow(
         terrain_triangles, site_solid_data, output_path, bounds,
         center_x, center_y, egrid=egrid, cadastre_metadata=cadastre_metadata,
         roads=roads, forest_points=forest_points, waters=waters, buildings=buildings,
+        railways=railways, bridges=bridges,
         base_elevation=0.0, road_recess_depth=road_recess_depth, return_model=return_model
     )
 

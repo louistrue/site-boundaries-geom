@@ -60,16 +60,8 @@ def citygml_building_to_ifc(
         if building.building_type:
             ifc_building.Description = building.building_type
         
-        # Create placement relative to site
-        origin = model.createIfcCartesianPoint([0.0, 0.0, 0.0])
-        axis = model.createIfcDirection([0.0, 0.0, 1.0])
-        ref_direction = model.createIfcDirection([1.0, 0.0, 0.0])
-        axis2_placement = model.createIfcAxis2Placement3D(origin, axis, ref_direction)
-        building_placement = model.createIfcLocalPlacement(
-            site.ObjectPlacement,
-            axis2_placement
-        )
-        ifc_building.ObjectPlacement = building_placement
+        # Place building at origin using fast API (no manual entity creation)
+        ifcopenshell.api.run("geometry.edit_object_placement", model, product=ifc_building)
         
         # Assign building to site
         ifcopenshell.api.run(
@@ -410,9 +402,13 @@ def citygml_buildings_to_ifc(
     """
     ifc_buildings = []
     
-    logger.info(f"Converting {len(buildings)} CityGML buildings to IFC...")
+    total_buildings = len(buildings)
+    logger.info(f"Converting {total_buildings} CityGML buildings to IFC...")
     
-    for building in buildings:
+    # Batch progress reporting - update every 100 buildings
+    progress_interval = 100
+    
+    for idx, building in enumerate(buildings):
         try:
             ifc_building = citygml_building_to_ifc(
                 model, building, site, body_context, footprint_context,
@@ -420,6 +416,13 @@ def citygml_buildings_to_ifc(
             )
             if ifc_building:
                 ifc_buildings.append(ifc_building)
+            
+            # Progress reporting every 100 buildings
+            current_count = idx + 1
+            if current_count % progress_interval == 0 or current_count == total_buildings:
+                progress_pct = (current_count / total_buildings) * 100
+                print(f"  Progress: {current_count}/{total_buildings} buildings ({progress_pct:.1f}%)", flush=True)
+                
         except Exception as e:
             logger.warning(f"Failed to convert building {building.id}: {e}")
             continue

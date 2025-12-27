@@ -43,6 +43,7 @@ def get_vertex_z(x: float, y: float, z_lookup: Dict[Tuple[float, float], float],
 def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds, 
                         center_x, center_y, egrid=None, cadastre_metadata=None,
                         roads=None, forest_points=None, waters=None, buildings=None,
+                        railways=None, bridges=None,
                         base_elevation=0.0, road_recess_depth=0.0, return_model=False):
     """
     Create an IFC file with terrain (with hole) and/or site solid, optionally with roads, trees, water, and buildings.
@@ -59,6 +60,8 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
         forest_points: List of ForestPoint objects from NFI data, or None to skip forest
         waters: List of WaterFeature objects, or None to skip water
         buildings: List of CityGMLBuilding objects, or None to skip buildings
+        railways: List of RailwayFeature objects, or None to skip railways
+        bridges: List of BridgeFeature objects, or None to skip bridges
         base_elevation: Base elevation for roads and trees
         road_recess_depth: How much terrain is recessed for roads (roads sit in recess)
         return_model: If True, return model object instead of writing to file
@@ -475,6 +478,42 @@ def create_combined_ifc(terrain_triangles, site_solid_data, output_path, bounds,
             import traceback
             traceback.print_exc()
             print(f"  Continuing without water...")
+
+    # Add railways if provided
+    if railways:
+        print(f"\nAdding {len(railways)} railways to IFC model...")
+        try:
+            from src.roads_vegetation_to_ifc import railways_to_ifc
+            
+            ifc_railways = railways_to_ifc(
+                model, railways, site, body_context,
+                offset_x, offset_y, offset_z,
+                fetch_elevations_func=fetch_elevation_batch
+            )
+            print(f"  Added {len(ifc_railways)} railway elements")
+        except Exception as e:
+            import traceback
+            print(f"  ERROR adding railways: {e}")
+            traceback.print_exc()
+            print(f"  Continuing without railways...")
+
+    # Add bridges if provided
+    if bridges:
+        print(f"\nAdding {len(bridges)} bridges to IFC model...")
+        try:
+            from src.roads_vegetation_to_ifc import bridges_to_ifc
+            
+            ifc_bridges = bridges_to_ifc(
+                model, bridges, site, body_context,
+                offset_x, offset_y, offset_z,
+                fetch_elevations_func=fetch_elevation_batch
+            )
+            print(f"  Added {len(ifc_bridges)} bridge elements")
+        except Exception as e:
+            import traceback
+            print(f"  ERROR adding bridges: {e}")
+            traceback.print_exc()
+            print(f"  Continuing without bridges...")
 
     # Add buildings if provided
     if buildings:

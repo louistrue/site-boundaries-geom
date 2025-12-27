@@ -424,7 +424,8 @@ def triangulate_terrain_with_cutout(
             exterior = poly.exterior
             # Densify the exterior to add more vertices for terrain detail
             densified_exterior = _densify_ring(exterior, max_segment_length=15.0)
-            exterior_coords = np.array(densified_exterior.coords)[:-1]  # Remove closing point
+            # Force 2D coordinates for earcut (some sources have 3D coords)
+            exterior_coords = np.array([(c[0], c[1]) for c in densified_exterior.coords])[:-1]
             
             # Collect all rings: exterior + holes
             all_ring_coords = [exterior_coords]
@@ -433,7 +434,8 @@ def triangulate_terrain_with_cutout(
             # Add interior rings (holes within this polygon)
             for interior in poly.interiors:
                 densified_interior = _densify_ring(interior, max_segment_length=5.0)
-                hole_coords = np.array(densified_interior.coords)[:-1]
+                # Force 2D coordinates
+                hole_coords = np.array([(c[0], c[1]) for c in densified_interior.coords])[:-1]
                 if len(hole_coords) >= 3:
                     all_ring_coords.append(hole_coords)
                     ring_ends.append(ring_ends[-1] + len(hole_coords))
@@ -479,7 +481,8 @@ def _densify_ring(ring, max_segment_length: float = 10.0):
     for i in range(len(coords) - 1):
         p1 = coords[i]
         p2 = coords[i + 1]
-        new_coords.append(p1)
+        # Force 2D coordinates
+        new_coords.append((p1[0], p1[1]))
         
         # Calculate distance
         dx = p2[0] - p1[0]
@@ -496,8 +499,8 @@ def _densify_ring(ring, max_segment_length: float = 10.0):
                     p1[1] + t * dy
                 ))
     
-    # Add closing point
-    new_coords.append(coords[-1])
+    # Add closing point (force 2D)
+    new_coords.append((coords[-1][0], coords[-1][1]))
     
     return LineString(new_coords)
 

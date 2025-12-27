@@ -105,9 +105,19 @@ Examples:
     building_group.add_argument("--include-buildings", action="store_true",
                                 help="Include buildings from CityGML")
     
+    # Railway configuration
+    railway_group = parser.add_argument_group("Railway Options")
+    railway_group.add_argument("--include-railways", action="store_true",
+                               help="Include railways from OpenStreetMap")
+    
+    # Bridge configuration
+    bridge_group = parser.add_argument_group("Bridge Options")
+    bridge_group.add_argument("--include-bridges", action="store_true",
+                              help="Include bridges from OpenStreetMap")
+    
     # Convenience flag for all features
     parser.add_argument("--all", action="store_true",
-                        help="Include ALL features (roads, forest, water, buildings)")
+                        help="Include ALL features (roads, forest, water, buildings, railways)")
     
     # Output
     parser.add_argument("--output", default="combined_terrain.ifc",
@@ -121,6 +131,8 @@ Examples:
         args.include_forest = True
         args.include_water = True
         args.include_buildings = True
+        args.include_railways = True
+        # Note: bridges excluded from --all, use --include-bridges explicitly if needed
     
     # Build features list
     features = []
@@ -136,6 +148,10 @@ Examples:
         features.append("water")
     if args.include_buildings:
         features.append("buildings")
+    if args.include_railways:
+        features.append("railways")
+    if args.include_bridges:
+        features.append("bridges")
     
     # Show configuration summary IMMEDIATELY
     print(f"\nConfiguration:", flush=True)
@@ -183,6 +199,8 @@ Examples:
             include_forest=args.include_forest,
             include_water=args.include_water,
             include_buildings=args.include_buildings,
+            include_railways=args.include_railways,
+            include_bridges=args.include_bridges,
             road_buffer_m=args.road_buffer,
             road_recess_depth=args.road_recess,
             forest_spacing=args.forest_spacing,

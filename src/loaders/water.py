@@ -1,447 +1,300 @@
 """
-Swiss Water Network Loader
+Swiss Water Loader - Combined FOEN Raster + swissTLM3D Lakes
 
-Efficiently load Swiss water network data (creeks, rivers, lakes) from geo.admin.ch APIs.
-Uses swissTLM3D layer which provides actual polygon geometries for water surfaces (real widths).
+- Rivers/streams: Extracted from FOEN Overland Flow Map raster (real shapes)
+- Lakes: Fetched from swissTLM3D water network layer (polygon data)
 """
 
 import logging
-from typing import Optional, Tuple, List, Dict, Union
+from typing import Optional, List
 from dataclasses import dataclass
 
 import requests
-from shapely.geometry import LineString, Polygon, shape
+import numpy as np
+from PIL import Image
+from io import BytesIO
+from shapely.geometry import Polygon, MultiPolygon, shape, box
+from shapely.ops import unary_union
 
 logger = logging.getLogger(__name__)
 
-# REST API endpoint
-REST_API_URL = "https://api3.geo.admin.ch/rest/services/all/MapServer/identify"
+# FOEN Overland Flow Map WMS - river/stream shapes
+FOEN_WMS_URL = "https://wms.geo.admin.ch/"
+FOEN_WATER_LAYER = "ch.bafu.gefaehrdungskarte-oberflaechenabfluss"
 
-# swissTLM3D water layer - provides ACTUAL polygon geometries for water surfaces
-# objektart values:
-#   4 = Fliessgewässer (river/stream line)
-#   6 = Fliessgewässer unterirdisch (underground stream)
-#   101 = Wasserfläche (water surface polygon - REAL GEOMETRY!)
-WATER_TLM3D_LAYER = "ch.swisstopo.swisstlm3d-gewaessernetz"
-
-# Fallback layer (lines only, need buffering)
-WATER_NETWORK_LAYER = "ch.swisstopo.vec25-gewaessernetz_referenz"
-
-# Water type mappings for fallback layer
-WATER_TYPE_MAP = {
-    "Bach": "creek",
-    "Bach_U": "underground_creek",
-    "Bachachs": "creek_axis",
-    "Fluss": "river",
-    "Seeachse": "lake_axis",
-    "See": "lake"
-}
-
-# Default widths by type (meters) - only used for line geometries as fallback
-WATER_WIDTHS = {
-    "creek": 3.0,
-    "underground_creek": 2.0,
-    "creek_axis": 3.0,
-    "river": 25.0,  # Increased default for rivers
-    "lake_axis": 15.0,
-    "lake": None
-}
-
-# Known major Swiss rivers with approximate widths (meters)
-# Based on actual measurements at typical urban locations
-MAJOR_RIVER_WIDTHS = {
-    # Major rivers
-    "rhein": 150.0,
-    "rhine": 150.0,
-    "aare": 80.0,
-    "aar": 80.0,
-    "limmat": 50.0,
-    "reuss": 60.0,
-    "sihl": 25.0,
-    "rhone": 100.0,
-    "rhône": 100.0,
-    "saane": 40.0,
-    "sarine": 40.0,
-    "thur": 50.0,
-    "birs": 30.0,
-    "emme": 40.0,
-    "linth": 35.0,
-    "glatt": 20.0,
-    "töss": 25.0,
-    "broye": 25.0,
-    "orbe": 20.0,
-    "venoge": 15.0,
-    "arve": 50.0,
-    "doubs": 40.0,
-    "inn": 50.0,
-    "ticino": 60.0,
-    "maggia": 40.0,
-    # Medium rivers
-    "lorze": 15.0,
-    "kleine emme": 25.0,
-    "wigger": 12.0,
-    "suhre": 12.0,
-    "wynige": 10.0,
-    "sense": 25.0,
-}
+# swissTLM3D Water Network - lakes and ponds
+TLM3D_API_URL = "https://api3.geo.admin.ch/rest/services/api/MapServer/identify"
+TLM3D_WATER_LAYER = "ch.swisstopo.swisstlm3d-gewaessernetz"
 
 
 @dataclass
 class WaterFeature:
-    """Represents a water feature (creek, river, lake)."""
+    """Represents a water feature (river, lake)."""
     id: str
-    geometry: Union[LineString, Polygon]  # LineString for streams/rivers, Polygon for lakes
-    water_type: str  # "creek", "river", "lake", etc.
+    geometry: Polygon
+    water_type: str
     name: Optional[str] = None
-    gewiss_number: Optional[int] = None  # GEWISS identifier
-    width: Optional[float] = None  # Width in meters (for buffering)
+    gewiss_number: Optional[str] = None
+    width: Optional[float] = None
     is_underground: bool = False
-    attributes: Optional[Dict] = None
+    attributes: Optional[dict] = None
 
 
 class SwissWaterLoader:
-    """Load water network data from Swiss geo.admin.ch REST API."""
+    """Load water features from FOEN raster (rivers) + swissTLM3D (lakes)."""
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "SiteBoundariesGeom/1.0 (Water Data Loader)"
+            "User-Agent": "SwissSiteModel/1.0"
         })
     
     def get_water_in_bounds(
         self,
-        bounds: Tuple[float, float, float, float],
+        bounds: tuple,
         fetch_elevations_func=None,
-        max_features: int = 500
+        max_features: int = 50,
+        resolution: float = 2.0
     ) -> List[WaterFeature]:
         """
-        Get water features within bounds using REST API identify.
+        Get water features within bounds.
         
-        Uses swissTLM3D layer which provides ACTUAL polygon geometries for water surfaces,
-        giving real widths instead of estimated ones.
-        
-        Args:
-            bounds: (minx, miny, maxx, maxy) in EPSG:2056
-            fetch_elevations_func: Optional function to fetch elevations
-            max_features: Maximum features to return
-        
-        Returns:
-            List of WaterFeature objects
+        Combines:
+        - Rivers/streams from FOEN raster (accurate shapes)
+        - Lakes from swissTLM3D vector data
         """
         minx, miny, maxx, maxy = bounds
         
-        # Expand map extent for better coverage
-        extent_buffer = 1000
-        map_extent = f"{minx-extent_buffer},{miny-extent_buffer},{maxx+extent_buffer},{maxy+extent_buffer}"
+        # Fetch from both sources
+        print("  Fetching FOEN water raster (rivers)...")
+        river_features = self._extract_rivers_from_raster(
+            minx - 100, miny - 100, maxx + 100, maxy + 100, resolution
+        )
+        print(f"    Found {len(river_features)} river polygons")
         
-        # First try swissTLM3D layer (has real polygon geometries)
-        features = self._fetch_from_tlm3d(minx, miny, maxx, maxy, map_extent, max_features)
+        print("  Fetching swissTLM3D lakes...")
+        lake_features = self._fetch_lakes_from_tlm3d(bounds)
+        print(f"    Found {len(lake_features)} lakes")
         
-        # Fall back to vec25 layer if no results
-        if not features:
-            features = self._fetch_from_vec25(minx, miny, maxx, maxy, map_extent, max_features)
+        # Combine: lakes first (they take priority), then rivers
+        all_features = lake_features + river_features
         
-        # Fetch elevations if function provided
-        if features and fetch_elevations_func:
-            print(f"  Fetching elevations for {len(features)} water features...")
-            coords = []
-            for f in features:
-                if isinstance(f.geometry, LineString):
-                    midpoint = f.geometry.interpolate(0.5, normalized=True)
-                    coords.append((midpoint.x, midpoint.y))
-                elif isinstance(f.geometry, Polygon):
-                    coords.append((f.geometry.centroid.x, f.geometry.centroid.y))
-            
+        # Remove river features that overlap with lakes
+        if lake_features and river_features:
+            lake_union = unary_union([f.geometry for f in lake_features])
+            filtered_rivers = []
+            for rf in river_features:
+                try:
+                    # Keep river if it doesn't overlap significantly with lakes
+                    overlap = rf.geometry.intersection(lake_union).area
+                    if overlap < rf.geometry.area * 0.5:
+                        # Subtract lake area from river
+                        diff = rf.geometry.difference(lake_union)
+                        if not diff.is_empty and diff.area > 100:
+                            if diff.geom_type == 'MultiPolygon':
+                                diff = max(diff.geoms, key=lambda g: g.area)
+                            if diff.geom_type == 'Polygon':
+                                rf.geometry = diff
+                                filtered_rivers.append(rf)
+                except Exception:
+                    pass
+            all_features = lake_features + filtered_rivers
+        
+        # Clip to bounds
+        clip_box = box(bounds[0], bounds[1], bounds[2], bounds[3])
+        clipped = []
+        for f in all_features[:max_features]:
+            try:
+                clipped_geom = f.geometry.intersection(clip_box)
+                if not clipped_geom.is_empty and clipped_geom.area > 50:
+                    if clipped_geom.geom_type == 'MultiPolygon':
+                        clipped_geom = max(clipped_geom.geoms, key=lambda g: g.area)
+                    if clipped_geom.geom_type == 'Polygon':
+                        f.geometry = clipped_geom
+                        clipped.append(f)
+            except Exception:
+                pass
+        
+        print(f"    Total: {len(clipped)} water features")
+        
+        # Fetch elevations
+        if clipped and fetch_elevations_func:
+            coords = [(f.geometry.centroid.x, f.geometry.centroid.y) for f in clipped]
             if coords:
                 elevations = fetch_elevations_func(coords)
-                for feature, elev in zip(features, elevations, strict=True):
+                for feature, elev in zip(clipped, elevations):
                     if feature.attributes is None:
                         feature.attributes = {}
                     feature.attributes['elevation'] = elev
         
-        return features
+        return clipped
     
-    def _fetch_from_tlm3d(self, minx, miny, maxx, maxy, map_extent, max_features) -> List[WaterFeature]:
-        """Fetch water from swissTLM3D layer (real polygon geometries)."""
+    def _fetch_lakes_from_tlm3d(self, bounds: tuple) -> List[WaterFeature]:
+        """Fetch lakes and ponds from swissTLM3D."""
+        minx, miny, maxx, maxy = bounds
+        
+        # Buffer for edge cases
+        buffer = 50
+        geometry = f'{minx-buffer},{miny-buffer},{maxx+buffer},{maxy+buffer}'
+        
         params = {
-            "geometry": f"{minx},{miny},{maxx},{maxy}",
-            "geometryType": "esriGeometryEnvelope",
-            "layers": f"all:{WATER_TLM3D_LAYER}",
-            "mapExtent": map_extent,
-            "imageDisplay": "1000,1000,96",
-            "tolerance": 0,
-            "returnGeometry": "true",
-            "sr": "2056",
+            'geometryType': 'esriGeometryEnvelope',
+            'geometry': geometry,
+            'geometryFormat': 'geojson',
+            'layers': f'all:{TLM3D_WATER_LAYER}',
+            'tolerance': 0,
+            'sr': 2056,
+            'returnGeometry': True,
+            'f': 'json'
         }
         
         try:
-            response = self.session.get(REST_API_URL, params=params, timeout=30)
-            response.raise_for_status()
+            response = self.session.get(TLM3D_API_URL, params=params, timeout=30)
+            if response.status_code != 200:
+                return []
+            
             data = response.json()
-            
-            results = data.get("results", [])
-            
-            # Separate polygon (real surface) and line features
-            polygon_results = [r for r in results if 'rings' in r.get('geometry', {})]
-            line_results = [r for r in results if 'paths' in r.get('geometry', {})]
-            
-            print(f"  swissTLM3D: {len(polygon_results)} polygon surfaces, {len(line_results)} line features")
-            
             features = []
-            # Prioritize polygon features (real water surface geometry)
-            for result in polygon_results[:max_features]:
-                feature = self._parse_tlm3d_result(result, is_polygon=True)
-                if feature:
-                    features.append(feature)
             
-            # Add line features if we have room (for small streams)
-            remaining = max_features - len(features)
-            if remaining > 0:
-                for result in line_results[:remaining]:
-                    feature = self._parse_tlm3d_result(result, is_polygon=False)
-                    if feature:
-                        features.append(feature)
-            
-            return features
-            
-        except Exception as e:
-            logger.exception("swissTLM3D query failed")
-            return []
-    
-    def _fetch_from_vec25(self, minx, miny, maxx, maxy, map_extent, max_features) -> List[WaterFeature]:
-        """Fallback: fetch from vec25 layer (line geometries only)."""
-        params = {
-            "geometry": f"{minx},{miny},{maxx},{maxy}",
-            "geometryType": "esriGeometryEnvelope",
-            "layers": f"all:{WATER_NETWORK_LAYER}",
-            "mapExtent": map_extent,
-            "imageDisplay": "1000,1000,96",
-            "tolerance": 0,
-            "returnGeometry": "true",
-            "sr": "2056",
-        }
-        
-        try:
-            response = self.session.get(REST_API_URL, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = data.get("results", [])
-            print(f"  vec25 fallback: {len(results)} features")
-            
-            features = []
-            for result in results[:max_features]:
-                feature = self._parse_result(result)
-                if feature:
-                    features.append(feature)
-            
-            return features
-            
-        except Exception as e:
-            logger.exception("vec25 query failed")
-            return []
-    
-    def _parse_tlm3d_result(self, result: Dict, is_polygon: bool) -> Optional[WaterFeature]:
-        """Parse a swissTLM3D result into a WaterFeature."""
-        try:
-            geom_data = result.get("geometry", {})
-            attrs = result.get("attributes", {})
-            feature_id = str(result.get("id", "unknown"))
-            
-            geom = None
-            if is_polygon and 'rings' in geom_data:
-                rings = geom_data["rings"]
-                if rings and len(rings[0]) >= 3:
-                    coords = [(p[0], p[1]) for p in rings[0]]
-                    geom = Polygon(coords)
-            elif 'paths' in geom_data:
-                paths = geom_data["paths"]
-                if paths and len(paths[0]) >= 2:
-                    coords = [(p[0], p[1]) for p in paths[0]]
-                    geom = LineString(coords)
-            
-            if geom is None:
-                return None
-            
-            # Determine water type from objektart
-            objektart = attrs.get("objektart")
-            if objektart == 101:
-                water_type = "water_surface"  # Actual polygon surface
-            elif objektart == 6:
-                water_type = "underground_creek"
-            elif objektart == 4:
-                water_type = "river"
-            else:
-                water_type = "creek"
-            
-            name = attrs.get("name", "").strip() or None
-            gwl_nr = attrs.get("gwl_nr")
-            
-            # For polygon surfaces, no width needed (we have real geometry)
-            # For lines, look up width by river name first, then use default
-            width = None
-            if not is_polygon:
-                # Check if this is a known major river
-                if name:
-                    name_lower = name.lower().strip()
-                    for river_name, river_width in MAJOR_RIVER_WIDTHS.items():
-                        if river_name in name_lower or name_lower in river_name:
-                            width = river_width
-                            break
-                # Fall back to type-based width
-                if width is None:
-                    width = WATER_WIDTHS.get(water_type, 5.0)
-            
-            return WaterFeature(
-                id=feature_id,
-                geometry=geom,
-                water_type=water_type,
-                name=name,
-                gewiss_number=gwl_nr,
-                width=width,
-                is_underground=(water_type == "underground_creek"),
-                attributes=attrs
-            )
-            
-        except Exception as e:
-            logger.debug(f"Failed to parse TLM3D result: {e}")
-            return None
-    
-    def _parse_result(self, result: Dict) -> Optional[WaterFeature]:
-        """Parse a REST API result into a WaterFeature."""
-        try:
-            geom_data = result.get("geometry", {})
-            attrs = result.get("attributes", {})
-            feature_id = str(result.get("id", "unknown"))
-            
-            # Parse geometry - handle ESRI format (paths for lines, rings for polygons)
-            geom = None
-            if "paths" in geom_data:
-                # LineString geometry (streams/rivers)
-                paths = geom_data["paths"]
-                if paths and len(paths) > 0:
-                    # Use first path (most common case)
-                    coords = [(p[0], p[1]) for p in paths[0]]
-                    if len(coords) >= 2:
-                        geom = LineString(coords)
-            elif "rings" in geom_data:
-                # Polygon geometry (lakes)
-                rings = geom_data["rings"]
-                if rings and len(rings) > 0:
-                    # Use first ring (exterior)
-                    coords = [(p[0], p[1]) for p in rings[0]]
-                    if len(coords) >= 3:
-                        geom = Polygon(coords)
-            else:
-                # Try shapely shape() as fallback
+            for result in data.get('results', []):
+                attrs = result.get('attributes', {})
+                geom_data = result.get('geometry', {})
+                
+                # Get polygon features (lakes, ponds, river surfaces)
+                geom_type = geom_data.get('type', '')
+                if 'Polygon' not in geom_type:
+                    continue
+                
                 try:
                     geom = shape(geom_data)
+                    if geom.geom_type == 'MultiPolygon':
+                        geom = max(geom.geoms, key=lambda g: g.area)
+                    
+                    if geom.geom_type != 'Polygon' or geom.area < 500:
+                        continue
+                    
+                    name = (attrs.get('name') or '').strip() or None
+                    
+                    # Determine water type by area (lakes are typically > 10000m²)
+                    water_type = 'lake' if geom.area > 10000 else 'pond'
+                    
+                    feature = WaterFeature(
+                        id=f"tlm3d_{result.get('id', len(features))}",
+                        geometry=geom,
+                        water_type=water_type,
+                        name=name,
+                        is_underground=False,
+                        attributes={'source': 'swissTLM3D'}
+                    )
+                    features.append(feature)
                 except Exception as e:
-                    logger.debug(f"Fallback geometry parsing failed for water feature {feature_id}: {e}")
-                    pass
+                    logger.debug(f"Error parsing TLM3D feature: {e}")
             
-            if geom is None:
-                logger.debug(f"Could not parse geometry for water feature {feature_id}")
-                return None
-            
-            # Get water type
-            obj_val = attrs.get("objectval", "")
-            water_type = WATER_TYPE_MAP.get(obj_val, "creek")  # Default to creek
-            
-            # Determine if underground
-            is_underground = water_type == "underground_creek"
-            
-            # Get name
-            name = attrs.get("name", "").strip() or None
-            
-            # Get GEWISS number
-            gewiss_nr = attrs.get("gewissnr")
-            if gewiss_nr is not None:
-                try:
-                    gewiss_nr = int(gewiss_nr)
-                except (ValueError, TypeError):
-                    gewiss_nr = None
-            
-            # Get width - check known rivers first, then use type default
-            width = None
-            if name:
-                name_lower = name.lower().strip()
-                for river_name, river_width in MAJOR_RIVER_WIDTHS.items():
-                    if river_name in name_lower or name_lower in river_name:
-                        width = river_width
-                        break
-            if width is None:
-                width = WATER_WIDTHS.get(water_type, 5.0)
-            
-            # Validate geometry type
-            if not isinstance(geom, (LineString, Polygon)):
-                logger.debug(f"Unsupported geometry type: {type(geom)}")
-                return None
-            
-            # Convert lakes to polygons if needed
-            if water_type == "lake" and isinstance(geom, LineString):
-                # If we got a line for a lake, buffer it slightly
-                geom = geom.buffer(5.0)  # 5m buffer for lake representation
-            
-            return WaterFeature(
-                id=feature_id,
-                geometry=geom,
-                water_type=water_type,
-                name=name,
-                gewiss_number=gewiss_nr,
-                width=width,
-                is_underground=is_underground,
-                attributes=attrs
-            )
+            # Sort by area (largest first)
+            features.sort(key=lambda f: f.geometry.area, reverse=True)
+            return features
             
         except Exception as e:
-            logger.debug(f"Failed to parse result: {e}")
-            return None
+            logger.debug(f"TLM3D request failed: {e}")
+            return []
     
-    def get_water_statistics(self, features: List[WaterFeature]) -> Dict:
-        """Calculate statistics for water features."""
-        if not features:
-            return {
-                "count": 0,
-                "total_length_m": 0,
-                "by_type": {}
-            }
+    def _extract_rivers_from_raster(
+        self,
+        minx: float,
+        miny: float, 
+        maxx: float,
+        maxy: float,
+        resolution: float = 2.0
+    ) -> List[WaterFeature]:
+        """Extract river polygons from FOEN WMS raster."""
+        try:
+            import cv2
+        except ImportError:
+            logger.warning("OpenCV not available")
+            return []
         
-        total_length = 0
-        by_type = {}
+        width = int((maxx - minx) / resolution)
+        height = int((maxy - miny) / resolution)
         
-        for feature in features:
-            # Count by type
-            wtype = feature.water_type
-            by_type[wtype] = by_type.get(wtype, 0) + 1
-            
-            # Calculate length
-            if isinstance(feature.geometry, LineString):
-                total_length += feature.geometry.length
-            elif isinstance(feature.geometry, Polygon):
-                total_length += feature.geometry.exterior.length
+        # Limit size
+        max_dim = 1000
+        if width > max_dim or height > max_dim:
+            scale = max_dim / max(width, height)
+            width = int(width * scale)
+            height = int(height * scale)
+            resolution = (maxx - minx) / width
         
-        return {
-            "count": len(features),
-            "total_length_m": total_length,
-            "by_type": by_type
+        params = {
+            'SERVICE': 'WMS',
+            'VERSION': '1.3.0',
+            'REQUEST': 'GetMap',
+            'LAYERS': FOEN_WATER_LAYER,
+            'CRS': 'EPSG:2056',
+            'BBOX': f'{minx},{miny},{maxx},{maxy}',
+            'WIDTH': width,
+            'HEIGHT': height,
+            'FORMAT': 'image/png'
         }
-
-
-def get_water_around_bounds(
-    bounds: Tuple[float, float, float, float],
-    fetch_elevations_func=None
-) -> List[WaterFeature]:
-    """
-    Convenience function to get water features in an area.
-    
-    Args:
-        bounds: (minx, miny, maxx, maxy) in EPSG:2056
-        fetch_elevations_func: Optional elevation function
-    
-    Returns:
-        List of WaterFeature objects
-    """
-    loader = SwissWaterLoader()
-    return loader.get_water_in_bounds(bounds, fetch_elevations_func)
-
+        
+        try:
+            response = self.session.get(FOEN_WMS_URL, params=params, timeout=30)
+            if response.status_code != 200:
+                return []
+            
+            if 'image' not in response.headers.get('content-type', ''):
+                return []
+            
+            img = Image.open(BytesIO(response.content))
+            arr = np.array(img)
+            
+            if len(arr.shape) < 3:
+                return []
+            
+            # Detect water (cyan: low R, high G, high B)
+            r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+            water_mask = ((b > 200) & (g > 150) & (r < 100)).astype(np.uint8) * 255
+            
+            if np.sum(water_mask) == 0:
+                return []
+            
+            contours, _ = cv2.findContours(water_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            features = []
+            for i, contour in enumerate(contours):
+                if len(contour) < 3:
+                    continue
+                
+                coords = []
+                for point in contour:
+                    px, py = point[0]
+                    x = minx + px * resolution
+                    y = maxy - py * resolution
+                    coords.append((x, y))
+                
+                if len(coords) < 3:
+                    continue
+                
+                try:
+                    poly = Polygon(coords)
+                    if not poly.is_valid:
+                        poly = poly.buffer(0)
+                    
+                    if poly.is_valid and poly.area > 100:
+                        feature = WaterFeature(
+                            id=f"foen_river_{i}",
+                            geometry=poly,
+                            water_type="river",
+                            name=None,
+                            is_underground=False,
+                            attributes={'source': 'foen_raster'}
+                        )
+                        features.append(feature)
+                except Exception:
+                    pass
+            
+            features.sort(key=lambda f: f.geometry.area, reverse=True)
+            return features
+            
+        except Exception as e:
+            logger.debug(f"Raster extraction failed: {e}")
+            return []

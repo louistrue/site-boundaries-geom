@@ -12,3 +12,7 @@ build/
 .idea/
 *.swp
 *.swo
+
+# IFC files (except showcase)
+*.ifc
+!*showcase*.ifc

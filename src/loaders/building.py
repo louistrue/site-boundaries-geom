@@ -11,6 +11,7 @@ Also supports fallback to FileGDB format for regions without CityGML data
 import logging
 import tempfile
 import zipfile
+import shutil
 import os
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
@@ -97,8 +98,9 @@ class CityGMLBuildingLoader:
         
         # Query STAC for tiles - request more than needed since some may not have CityGML
         url = f"{self.STAC_BASE}/collections/{self.COLLECTION}/items"
-        # Request 3x more tiles to account for older tiles without CityGML assets
-        query_limit = max(max_tiles * 3, 10)
+        # Request 3 tiles to account for older tiles without CityGML assets
+        # We only process max_tiles (typically 1), but need extras to find one with CityGML/GDB
+        query_limit = max(max_tiles * 3, 3)
         params = {'bbox': ','.join(map(str, bbox_wgs84)), 'limit': query_limit}
         
         response = requests.get(url, params=params, timeout=self.timeout)
@@ -125,6 +127,7 @@ class CityGMLBuildingLoader:
         
         all_buildings = []
         processed_count = 0
+        citygml_failed = False
         
         for tile in citygml_tiles:
             if processed_count >= max_tiles:
@@ -136,7 +139,13 @@ class CityGMLBuildingLoader:
                 logger.info(f"Processed tile {processed_count}/{min(len(citygml_tiles), max_tiles)}: {len(buildings)} buildings")
             except Exception as e:
                 logger.error(f"Failed to process tile {tile.get('id')}: {e}")
+                citygml_failed = True
                 continue
+        
+        # If CityGML failed and we got no buildings, try GDB fallback
+        if citygml_failed and not all_buildings:
+            logger.info("CityGML processing failed, trying GDB fallback...")
+            return self._get_buildings_from_gdb(tiles, bbox_2056, max_tiles)
         
         logger.info(f"Retrieved {len(all_buildings)} buildings from CityGML")
         return all_buildings
@@ -200,10 +209,10 @@ class CityGMLBuildingLoader:
                     # Create parent directories if needed
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                    # Extract file safely
+                    # Extract file safely using streaming (memory efficient)
                     with zf.open(member) as source:
                         with open(dest_path, 'wb') as target:
-                            target.write(source.read())
+                            shutil.copyfileobj(source, target)
             
             # Find GML file (may be in subdirectory)
             gml_file = None
@@ -475,7 +484,7 @@ class CityGMLBuildingLoader:
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as source:
                         with open(dest_path, 'wb') as target:
-                            target.write(source.read())
+                            shutil.copyfileobj(source, target)
             
             # Find GDB directory
             gdb_path = None
