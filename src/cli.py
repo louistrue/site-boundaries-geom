@@ -5,15 +5,19 @@ CLI for Site Boundaries Geometry Tool
 Command-line interface for generating IFC site models with terrain, site solid, roads, trees, water, and buildings.
 """
 
+# Minimal imports for fast startup
 import argparse
 import sys
 import os
-import requests
+
+# IMMEDIATE feedback - print banner before any heavy imports
+print("\n" + "=" * 60, flush=True)
+print("  Swiss Site Model Generator", flush=True)
+print("  IFC export with terrain, roads, water, trees & buildings", flush=True)
+print("=" * 60, flush=True)
 
 # Add src directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.site_model import run_combined_terrain_workflow
 
 
 def main():
@@ -22,26 +26,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic site model (terrain + site solid)
-  %(prog)s --egrid CH999979659148 --output site.ifc
+  # Full model with ALL features (recommended)
+  %(prog)s --address "Bundesplatz 3, Bern" --all --output site.ifc
   
-  # Full model with all features
-  %(prog)s --egrid CH999979659148 --include-roads --include-forest --include-water --include-buildings --output full.ifc
+  # Using EGRID with all features
+  %(prog)s --egrid CH999979659148 --all --output site.ifc
   
-  # Custom terrain area
-  %(prog)s --egrid CH999979659148 --radius 1000 --resolution 5 --output detailed.ifc
+  # Custom selection
+  %(prog)s --address "Bahnhofstrasse 1, Zürich" --include-roads --include-buildings --output custom.ifc
   
-  # Site solid only (no terrain)
-  %(prog)s --egrid CH999979659148 --no-terrain --output site_only.ifc
-  
-  # Terrain only (no site solid)
-  %(prog)s --egrid CH999979659148 --no-site-solid --output terrain_only.ifc
+  # Large detailed area
+  %(prog)s --address "Paradeplatz, Zürich" --all --radius 500 --resolution 10 --output detailed.ifc
         """
     )
     
-    # Required arguments
-    parser.add_argument("--egrid", required=True,
-                        help="Swiss EGRID number (required)")
+    # Input group - either EGRID or address (mutually exclusive, one required)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--egrid",
+                            help="Swiss EGRID identifier (e.g., CH999979659148)")
+    input_group.add_argument("--address",
+                            help="Swiss address (e.g., 'Bundesplatz 3, 3003 Bern')")
     
     # Optional location arguments
     parser.add_argument("--center-x", type=float,
@@ -101,15 +105,72 @@ Examples:
     building_group.add_argument("--include-buildings", action="store_true",
                                 help="Include buildings from CityGML")
     
+    # Convenience flag for all features
+    parser.add_argument("--all", action="store_true",
+                        help="Include ALL features (roads, forest, water, buildings)")
+    
     # Output
     parser.add_argument("--output", default="combined_terrain.ifc",
                         help="Output IFC file path")
     
     args = parser.parse_args()
     
+    # Handle --all flag
+    if args.all:
+        args.include_roads = True
+        args.include_forest = True
+        args.include_water = True
+        args.include_buildings = True
+    
+    # Build features list
+    features = []
+    if args.include_terrain:
+        features.append("terrain")
+    if args.include_site_solid:
+        features.append("site")
+    if args.include_roads:
+        features.append("roads")
+    if args.include_forest:
+        features.append("trees")
+    if args.include_water:
+        features.append("water")
+    if args.include_buildings:
+        features.append("buildings")
+    
+    # Show configuration summary IMMEDIATELY
+    print(f"\nConfiguration:", flush=True)
+    print(f"  Radius: {args.radius}m | Resolution: {args.resolution}m", flush=True)
+    print(f"  Features: {', '.join(features)}", flush=True)
+    print(f"  Output: {args.output}", flush=True)
+    
+    # If address provided, resolve it EARLY (before heavy imports)
+    egrid = args.egrid
+    if args.address:
+        print(f"\nResolving address: {args.address}", flush=True)
+        from src.loaders.address import AddressResolver
+        resolver = AddressResolver()
+        result = resolver.resolve(args.address)
+        if result is None:
+            print(f"Error: Could not resolve address to cadastral parcel")
+            sys.exit(1)
+        egrid, address_metadata = result
+        print(f"  EGRID: {egrid} (Canton: {address_metadata.get('canton', 'N/A')})", flush=True)
+        if address_metadata.get('map_url'):
+            print(f"  Verify: {address_metadata['map_url']}", flush=True)
+    else:
+        print(f"\nEGRID: {args.egrid}", flush=True)
+    
+    print("-" * 60, flush=True)
+    
+    # NOW import heavy modules (user sees progress)
+    print("\nLoading modules...", flush=True)
+    from src.site_model import run_combined_terrain_workflow
+    import requests
+    
     try:
         run_combined_terrain_workflow(
-            egrid=args.egrid,
+            egrid=egrid,
+            address=None,  # Already resolved above
             center_x=args.center_x,
             center_y=args.center_y,
             radius=args.radius,

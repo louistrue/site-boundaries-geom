@@ -12,3 +12,6 @@ build/
 .idea/
 *.swp
 *.swo
+
+# Generated IFC files (too large for GitHub)
+results/*.ifc

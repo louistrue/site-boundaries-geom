@@ -5,19 +5,25 @@ Fetches elevation data from Swiss geo.admin.ch height service.
 """
 
 import requests
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
-from threading import Lock
 
-# Rate limiting: 5 requests per second max
-_last_request_time = 0
-_request_lock = Lock()
+# Reusable session for connection pooling (much faster!)
+_session = None
+
+def _get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        # Enable connection pooling
+        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
+        _session.mount('https://', adapter)
+    return _session
 
 
 def _fetch_single_elevation(coord: Tuple[float, float]) -> float:
     """
-    Fetch elevation for a single coordinate with rate limiting.
+    Fetch elevation for a single coordinate.
 
     Args:
         coord: Tuple of (x, y) coordinates
@@ -25,21 +31,12 @@ def _fetch_single_elevation(coord: Tuple[float, float]) -> float:
     Returns:
         Elevation value or None on failure
     """
-    global _last_request_time
-
     x, y = coord
     url = "https://api3.geo.admin.ch/rest/services/height"
 
-    # Rate limiting: max 5 requests per second
-    with _request_lock:
-        current_time = time.time()
-        time_since_last = current_time - _last_request_time
-        if time_since_last < 0.2:  # 0.2 seconds = 5 req/s
-            time.sleep(0.2 - time_since_last)
-        _last_request_time = time.time()
-
     try:
-        res = requests.get(url, params={"easting": x, "northing": y, "sr": "2056"}, timeout=10)
+        session = _get_session()
+        res = session.get(url, params={"easting": x, "northing": y, "sr": "2056"}, timeout=10)
         res.raise_for_status()
         h = float(res.json()["height"])
         return h
@@ -47,8 +44,8 @@ def _fetch_single_elevation(coord: Tuple[float, float]) -> float:
         return None
 
 
-def fetch_elevation_batch(coords: List[Tuple[float, float]], batch_size: int = 50, 
-                          delay: float = 0.1, max_workers: int = 15) -> List[float]:
+def fetch_elevation_batch(coords: List[Tuple[float, float]], batch_size: int = 100, 
+                          delay: float = 0.0, max_workers: int = 50) -> List[float]:
     """
     Fetch elevations for a list of coordinates via geo.admin.ch REST height service.
     Uses concurrent requests for faster processing.

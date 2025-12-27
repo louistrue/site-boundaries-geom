@@ -14,7 +14,7 @@ from threading import Lock
 
 import requests
 from shapely.geometry import shape, box, LineString, MultiLineString, Polygon
-from shapely.ops import unary_union
+from shapely.ops import unary_union, linemerge
 
 try:
     from pyproj import Transformer
@@ -191,10 +191,12 @@ class SwissRoadLoader:
         self,
         bbox_2056: Tuple[float, float, float, float],
         layer: Optional[str] = None,
-        max_features: int = 1000
+        max_features: int = 5000
     ) -> List[RoadFeature]:
         """
-        Get roads using REST API MapServer Identify endpoint
+        Get roads using REST API MapServer Identify endpoint.
+        
+        Uses grid-based queries to overcome the ~200 feature API limit.
 
         Args:
             bbox_2056: Bounding box (min_x, min_y, max_x, max_y) in EPSG:2056
@@ -209,37 +211,63 @@ class SwissRoadLoader:
 
         logger.info(f"Fetching roads via REST API in bbox: {bbox_2056}, layer: {layer}")
 
+        # Calculate bbox dimensions
+        width = bbox_2056[2] - bbox_2056[0]
+        height = bbox_2056[3] - bbox_2056[1]
+        
+        # API returns max ~200 features per request
+        # Use grid cells of ~250m to stay under limit in dense areas
+        cell_size = 250.0
+        n_cols = max(1, int(width / cell_size) + 1)
+        n_rows = max(1, int(height / cell_size) + 1)
+        
         url = f"{self.REST_BASE}/api/MapServer/identify"
-        params = {
-            "geometryType": "esriGeometryEnvelope",
-            "geometry": f"{bbox_2056[0]},{bbox_2056[1]},{bbox_2056[2]},{bbox_2056[3]}",
-            "layers": f"all:{layer}",
-            "mapExtent": f"{bbox_2056[0]},{bbox_2056[1]},{bbox_2056[2]},{bbox_2056[3]}",
-            "imageDisplay": "1000,1000,96",
-            "tolerance": 0,
-            "returnGeometry": "true",
-            "geometryFormat": "geojson",
-            "sr": "2056"
-        }
+        
+        all_roads = {}  # Use dict to dedupe by ID
+        
+        for row in range(n_rows):
+            for col in range(n_cols):
+                # Calculate cell bbox
+                cell_minx = bbox_2056[0] + col * cell_size
+                cell_miny = bbox_2056[1] + row * cell_size
+                cell_maxx = min(bbox_2056[2], cell_minx + cell_size)
+                cell_maxy = min(bbox_2056[3], cell_miny + cell_size)
+                
+                params = {
+                    "geometryType": "esriGeometryEnvelope",
+                    "geometry": f"{cell_minx},{cell_miny},{cell_maxx},{cell_maxy}",
+                    "layers": f"all:{layer}",
+                    "mapExtent": f"{cell_minx},{cell_miny},{cell_maxx},{cell_maxy}",
+                    "imageDisplay": "1000,1000,96",
+                    "tolerance": 0,
+                    "returnGeometry": "true",
+                    "geometryFormat": "geojson",
+                    "sr": "2056"
+                }
 
-        try:
-            response = self._request_with_retry(url, params)
-            data = response.json()
+                try:
+                    response = self._request_with_retry(url, params)
+                    data = response.json()
 
-            roads = []
-            for result in data.get("results", []):
-                if max_features > 0 and len(roads) >= max_features:
+                    for result in data.get("results", []):
+                        road = self._parse_rest_result(result)
+                        if road and road.id not in all_roads:
+                            all_roads[road.id] = road
+                            if len(all_roads) >= max_features:
+                                break
+                                
+                except Exception as e:
+                    logger.warning(f"Grid cell query failed: {e}")
+                    continue
+                    
+                if len(all_roads) >= max_features:
                     break
-                road = self._parse_rest_result(result)
-                if road:
-                    roads.append(road)
+            if len(all_roads) >= max_features:
+                break
 
-            logger.info(f"Retrieved {len(roads)} roads via REST API")
-            return roads
-
-        except Exception as e:
-            logger.exception(f"REST API request failed: {e}")
-            raise
+        roads = list(all_roads.values())
+        logger.info(f"Retrieved {len(roads)} roads via REST API ({n_cols}x{n_rows} grid)")
+        return roads
 
     def _parse_rest_result(self, result: Dict) -> Optional[RoadFeature]:
         """
@@ -261,12 +289,15 @@ class SwissRoadLoader:
 
             # Convert to LineString if needed
             if geom.geom_type == "MultiLineString":
-                # Take the longest linestring
-                if geom.geoms:
-                    longest = max(geom.geoms, key=lambda ls: ls.length)
-                    geom = longest
-                else:
+                if not geom.geoms:
                     return None
+                # Try to merge contiguous segments first
+                merged = linemerge(geom)
+                if merged.geom_type == "LineString":
+                    geom = merged
+                else:
+                    # Fall back to longest if merge doesn't produce single line
+                    geom = max(geom.geoms, key=lambda ls: ls.length)
             elif geom.geom_type == "Polygon":
                 # Convert polygon to centerline (simplified approach)
                 # exterior returns LinearRing, convert to LineString

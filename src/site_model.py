@@ -9,7 +9,7 @@ import numpy as np
 import logging
 from src.elevation import fetch_elevation_batch
 from src.loaders.cadastre import fetch_boundary_by_egrid
-from src.terrain_mesh import create_circular_terrain_grid, apply_road_recesses_to_terrain, triangulate_terrain_with_cutout
+from src.terrain_mesh import create_circular_terrain_grid, apply_road_recesses_to_terrain, apply_water_cutouts_to_terrain, triangulate_terrain_with_cutout
 from src.site_geometry import create_site_solid_coords, calculate_height_offset
 from src.ifc_builder import create_combined_ifc
 
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 def run_combined_terrain_workflow(
     egrid=None,
+    address=None,
     center_x=None,
     center_y=None,
     radius=500.0,
@@ -42,7 +43,8 @@ def run_combined_terrain_workflow(
     Run the combined terrain generation workflow.
     
     Args:
-        egrid: Swiss EGRID number (required)
+        egrid: Swiss EGRID identifier (provide either egrid or address)
+        address: Swiss address string (provide either egrid or address)
         center_x, center_y: Optional center coordinates (defaults to site centroid)
         radius: Radius of circular terrain area (meters)
         resolution: Grid resolution (meters)
@@ -66,8 +68,21 @@ def run_combined_terrain_workflow(
         If return_model=True: (model, offset_x, offset_y, offset_z)
         If return_model=False: (offset_x, offset_y, offset_z)
     """
+    # Resolve address to EGRID if provided
+    if address and not egrid:
+        from src.loaders.address import AddressResolver
+        print(f"Resolving address: {address}")
+        resolver = AddressResolver()
+        result = resolver.resolve(address)
+        if result is None:
+            raise ValueError(f"Could not resolve address to cadastral parcel: {address}")
+        egrid, address_metadata = result
+        print(f"Resolved to EGRID: {egrid} (Canton: {address_metadata.get('canton', 'N/A')})")
+        if address_metadata.get('map_url'):
+            print(f"  Verify location: {address_metadata['map_url']}")
+    
     if not egrid:
-        raise ValueError("EGRID is required for combined terrain generation.")
+        raise ValueError("Either EGRID or address is required for combined terrain generation.")
 
     # Fetch site boundary from cadastre
     site_geometry, cadastre_metadata = fetch_boundary_by_egrid(egrid)
@@ -90,6 +105,7 @@ def run_combined_terrain_workflow(
     site_coords_3d = None
     z_offset = None
     roads = None  # Initialize roads variable
+    waters = None  # Initialize waters variable (loaded early for terrain cutouts)
 
     # Get site boundary 3D coordinates
     ring = site_geometry.exterior
@@ -102,7 +118,7 @@ def run_combined_terrain_workflow(
 
     print(f"\nFetching site boundary elevations ({len(site_coords_2d)} points)...")
     site_elevations = fetch_elevation_batch(site_coords_2d)
-    site_coords_3d = [(x, y, z) for (x, y), z in zip(site_coords_2d, site_elevations, strict=True)]
+    site_coords_3d = [(x, y, z) for (x, y), z in zip(site_coords_2d, site_elevations)]
 
     # Create terrain if requested
     if include_terrain:
@@ -124,12 +140,19 @@ def run_combined_terrain_workflow(
             )
 
         # Load roads EARLY if requested (needed before triangulation for recesses)
+        # Use the full circular terrain bounds, not just EGRID buffer
         roads = None
         if include_roads:
-            print(f"\nLoading roads (buffer: {road_buffer_m}m)...")
+            print(f"\nLoading roads (radius: {radius}m)...")
             try:
-                from src.loaders.road import get_roads_around_egrid
-                roads, road_stats = get_roads_around_egrid(egrid, buffer_m=road_buffer_m)
+                from src.loaders.road import SwissRoadLoader, get_roads_in_bbox
+                # Use circular terrain bounds for full coverage
+                if circle_bounds:
+                    roads, road_stats = get_roads_in_bbox(circle_bounds)
+                else:
+                    # Fallback to EGRID-based loading
+                    from src.loaders.road import get_roads_around_egrid
+                    roads, road_stats = get_roads_around_egrid(egrid, buffer_m=max(road_buffer_m, radius))
                 print(f"  Found {road_stats['count']} roads")
                 print(f"  Total length: {road_stats['total_length_m']:.1f} m")
                 if road_stats['road_classes']:
@@ -148,11 +171,122 @@ def run_combined_terrain_workflow(
         road_edge_elevations = None
         if roads and embed_roads_in_terrain:
             print("\nApplying road recesses to terrain...")
+            
+            # Clip road geometries to terrain boundary (for IFC output)
+            from shapely.geometry import Point
+            terrain_boundary = Point(center_x, center_y).buffer(radius, resolution=64)
+            
+            clipped_roads = []
+            from src.loaders.road import RoadFeature
+            for r in roads:
+                if r.geometry is None or r.geometry.is_empty:
+                    continue
+                try:
+                    clipped_geom = r.geometry.intersection(terrain_boundary)
+                    if clipped_geom.is_empty:
+                        continue
+                    # Handle MultiLineString from clipping
+                    if clipped_geom.geom_type == 'MultiLineString':
+                        from shapely.ops import linemerge
+                        clipped_geom = linemerge(clipped_geom)
+                        if clipped_geom.geom_type == 'MultiLineString':
+                            # Take longest segment if can't merge
+                            clipped_geom = max(clipped_geom.geoms, key=lambda g: g.length)
+                    if clipped_geom.geom_type != 'LineString':
+                        continue
+                    clipped_road = RoadFeature(
+                        id=r.id,
+                        name=r.name,
+                        road_class=r.road_class,
+                        road_number=r.road_number,
+                        geometry=clipped_geom,
+                        width=r.width,
+                        surface_type=r.surface_type,
+                        attributes=r.attributes
+                    )
+                    clipped_roads.append(clipped_road)
+                except Exception as e:
+                    logger.warning(f"Could not clip road {r.id}: {e}")
+                    continue
+            
+            print(f"  Clipped {len(clipped_roads)} roads to radius")
+            roads = clipped_roads  # Replace with clipped versions
+            
             road_polygons, road_edge_coords, road_edge_elevations = apply_road_recesses_to_terrain(
-                roads, fetch_elevations_func=fetch_elevation_batch
+                roads, 
+                terrain_coords=terrain_coords,
+                terrain_elevations=terrain_elevations,
+                fetch_elevations_func=fetch_elevation_batch  # Fallback only
             )
 
-        # Triangulate terrain with cutouts
+        # Load water features EARLY if requested (needed before triangulation for cutouts)
+        waters = None
+        water_polygons = None
+        water_edge_coords = None
+        water_edge_elevations = None
+        if include_water:
+            print(f"\nLoading water features (radius: {radius}m)...")
+            try:
+                from src.loaders.water import SwissWaterLoader
+                loader = SwissWaterLoader()
+                bounds = circle_bounds if circle_bounds else site_geometry.bounds
+                waters = loader.get_water_in_bounds(bounds)
+                print(f"  Found {len(waters)} water features")
+                
+                # Count surface vs underground
+                surface_count = sum(1 for w in waters if not w.is_underground)
+                underground_count = len(waters) - surface_count
+                print(f"    Surface water: {surface_count}, Underground: {underground_count}")
+                
+                # Apply water cutouts for surface water
+                if waters:
+                    print("\nApplying surface water cutouts to terrain...")
+                    # Create terrain boundary for clipping lakes
+                    from shapely.geometry import Point, Polygon, LineString
+                    terrain_boundary = Point(center_x, center_y).buffer(radius, resolution=64)
+                    
+                    # CLIP water feature geometries to terrain boundary (for IFC output)
+                    clipped_waters = []
+                    for w in waters:
+                        if w.geometry is None or w.geometry.is_empty:
+                            continue
+                        try:
+                            clipped_geom = w.geometry.intersection(terrain_boundary)
+                            if clipped_geom.is_empty:
+                                continue
+                            # Create a new water feature with clipped geometry
+                            from src.loaders.water import WaterFeature
+                            clipped_water = WaterFeature(
+                                id=w.id,
+                                name=w.name,
+                                water_type=w.water_type,
+                                geometry=clipped_geom,
+                                width=w.width,
+                                is_underground=w.is_underground,
+                                attributes=w.attributes
+                            )
+                            clipped_waters.append(clipped_water)
+                        except Exception as e:
+                            logger.warning(f"Could not clip water {w.id}: {e}")
+                            continue
+                    
+                    print(f"  Clipped {len(clipped_waters)} water features to radius")
+                    waters = clipped_waters  # Replace with clipped versions
+                    
+                    water_polygons, water_edge_coords, water_edge_elevations = apply_water_cutouts_to_terrain(
+                        waters,
+                        terrain_coords=terrain_coords,
+                        terrain_elevations=terrain_elevations,
+                        fetch_elevations_func=fetch_elevation_batch,
+                        terrain_boundary=terrain_boundary
+                    )
+            except Exception as e:
+                import traceback
+                print(f"  ERROR loading water: {e}")
+                traceback.print_exc()
+                waters = None
+
+        # Triangulate terrain with cutouts (site, roads, and surface water)
         print("\nTriangulating terrain...")
         terrain_triangles = triangulate_terrain_with_cutout(
             terrain_coords, terrain_elevations, site_geometry,
@@ -160,7 +294,10 @@ def run_combined_terrain_workflow(
             site_boundary_elevations=site_elevations,
             road_polygons=road_polygons,
             road_edge_coords=road_edge_coords,
-            road_edge_elevations=road_edge_elevations
+            road_edge_elevations=road_edge_elevations,
+            water_polygons=water_polygons,
+            water_edge_coords=water_edge_coords,
+            water_edge_elevations=water_edge_elevations
         )
 
     # Create site solid if requested
@@ -205,8 +342,8 @@ def run_combined_terrain_workflow(
             traceback.print_exc()
             forest_points = None
 
-    waters = None
-    if include_water:
+    # If water wasn't loaded during terrain processing (e.g., terrain disabled), load it now
+    if include_water and waters is None:
         print(f"\nLoading water features...")
         try:
             from src.loaders.water import SwissWaterLoader
@@ -227,7 +364,7 @@ def run_combined_terrain_workflow(
             from src.loaders.building import CityGMLBuildingLoader
             loader = CityGMLBuildingLoader()
             bounds = circle_bounds if circle_bounds else site_geometry.bounds
-            buildings = loader.get_buildings_in_bbox(bounds, max_tiles=3)  # Allow multiple tiles for better coverage
+            buildings = loader.get_buildings_in_bbox(bounds, max_tiles=5)  # Allow more tiles for better coverage
             print(f"  Found {len(buildings)} buildings")
             if buildings:
                 for i, b in enumerate(buildings[:5]):

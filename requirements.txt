@@ -10,6 +10,7 @@ fastapi==0.127.0
 uvicorn==0.39.0
 scipy==1.15.0
 fiona==1.10.1
+mapbox-earcut==2.0.0
 
 # Security middleware
 slowapi==0.1.9

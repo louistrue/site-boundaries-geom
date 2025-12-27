@@ -85,9 +85,11 @@ class CityGMLBuildingLoader:
         max_lon, max_lat = self.transformer.transform(bbox_2056[2], bbox_2056[3])
         bbox_wgs84 = (min_lon, min_lat, max_lon, max_lat)
         
-        # Query STAC for tiles
+        # Query STAC for tiles - request more than needed since some may not have CityGML
         url = f"{self.STAC_BASE}/collections/{self.COLLECTION}/items"
-        params = {'bbox': ','.join(map(str, bbox_wgs84)), 'limit': max_tiles}
+        # Request 3x more tiles to account for older tiles without CityGML assets
+        query_limit = max(max_tiles * 3, 10)
+        params = {'bbox': ','.join(map(str, bbox_wgs84)), 'limit': query_limit}
         
         response = requests.get(url, params=params, timeout=self.timeout)
         response.raise_for_status()
@@ -97,15 +99,30 @@ class CityGMLBuildingLoader:
             logger.warning("No STAC tiles found for bbox")
             return []
         
-        logger.info(f"Found {len(tiles)} tiles, processing up to {max_tiles}...")
+        # Filter to tiles that have CityGML assets (newer tiles)
+        citygml_tiles = []
+        for tile in tiles:
+            has_citygml = any('citygml' in name.lower() for name in tile.get('assets', {}).keys())
+            if has_citygml:
+                citygml_tiles.append(tile)
+        
+        if not citygml_tiles:
+            logger.warning(f"Found {len(tiles)} tiles but none have CityGML assets (older data)")
+            return []
+        
+        logger.info(f"Found {len(citygml_tiles)} CityGML tiles (of {len(tiles)} total), processing up to {max_tiles}...")
         
         all_buildings = []
+        processed_count = 0
         
-        for tile_idx, tile in enumerate(tiles[:max_tiles]):
+        for tile in citygml_tiles:
+            if processed_count >= max_tiles:
+                break
             try:
                 buildings = self._process_tile(tile, bbox_2056)
                 all_buildings.extend(buildings)
-                logger.info(f"Processed tile {tile_idx + 1}/{len(tiles[:max_tiles])}: {len(buildings)} buildings")
+                processed_count += 1
+                logger.info(f"Processed tile {processed_count}/{min(len(citygml_tiles), max_tiles)}: {len(buildings)} buildings")
             except Exception as e:
                 logger.error(f"Failed to process tile {tile.get('id')}: {e}")
                 continue
@@ -177,11 +194,14 @@ class CityGMLBuildingLoader:
                         with open(dest_path, 'wb') as target:
                             target.write(source.read())
             
-            # Find GML file
+            # Find GML file (may be in subdirectory)
             gml_file = None
-            for f in os.listdir(tmpdir):
-                if f.endswith('.gml'):
-                    gml_file = os.path.join(tmpdir, f)
+            for root, dirs, files in os.walk(tmpdir):
+                for f in files:
+                    if f.endswith('.gml'):
+                        gml_file = os.path.join(root, f)
+                        break
+                if gml_file:
                     break
             
             if not gml_file:

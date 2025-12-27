@@ -52,9 +52,11 @@ FOREST_CANOPY_RADIUS_RATIO = 0.35  # canopy radius is 35% of height
 # Road color (dark asphalt)
 ROAD_COLOR_RGB = (0.15, 0.15, 0.15)  # Dark gray/black
 
-# Water colors
-WATER_COLOR_RGB = (0.2, 0.4, 0.6)  # Blue
+# Water colors - darker/greenish tint for natural water appearance
+WATER_SURFACE_COLOR_RGB = (0.12, 0.28, 0.22)  # Dark teal/greenish - surface water
+WATER_UNDERGROUND_COLOR_RGB = (0.08, 0.18, 0.25)  # Even darker blue-gray - underground water
 WATER_DEPTH_OFFSET = -0.1  # meters - water sits slightly below terrain
+UNDERGROUND_WATER_OFFSET = -1.5  # meters - underground water shown below terrain
 
 # Tree colors
 DECIDUOUS_COLOR_RGB = (0.2, 0.5, 0.2)  # Medium green
@@ -90,15 +92,31 @@ def _create_road_style(model: ifcopenshell.file) -> ifcopenshell.entity_instance
     return surface_style
 
 
-def _create_water_style(model: ifcopenshell.file) -> ifcopenshell.entity_instance:
-    """Create a blue water surface style."""
-    # Create surface color
-    colour = model.createIfcColourRgb(None, *WATER_COLOR_RGB)
+def _create_water_style(model: ifcopenshell.file, is_underground: bool = False) -> ifcopenshell.entity_instance:
+    """Create a water surface style with darker/greenish tint.
+    
+    Args:
+        model: IFC model
+        is_underground: If True, creates a more transparent style for underground water
+    
+    Returns:
+        IfcSurfaceStyle for water
+    """
+    if is_underground:
+        # Underground water: more transparent, darker color
+        colour = model.createIfcColourRgb(None, *WATER_UNDERGROUND_COLOR_RGB)
+        transparency = 0.6  # More transparent to indicate underground
+        style_name = "WaterUnderground"
+    else:
+        # Surface water: darker greenish tint
+        colour = model.createIfcColourRgb(None, *WATER_SURFACE_COLOR_RGB)
+        transparency = 0.25  # Slightly transparent
+        style_name = "WaterSurface"
     
     # Create surface style rendering
     rendering = model.createIfcSurfaceStyleRendering(
         colour,
-        0.3,  # Transparency (0.3 = slightly transparent)
+        transparency,
         None,  # DiffuseColour
         None,  # TransmissionColour
         None,  # DiffuseTransmissionColour
@@ -110,7 +128,7 @@ def _create_water_style(model: ifcopenshell.file) -> ifcopenshell.entity_instanc
     
     # Create surface style
     surface_style = model.createIfcSurfaceStyle(
-        "Water",
+        style_name,
         "BOTH",
         [rendering]
     )
@@ -516,6 +534,9 @@ def water_to_ifc(
     if water.water_type:
         ifc_water.Description = water.water_type.replace("_", " ").title()
     
+    # Check if this is underground water
+    is_underground = water.is_underground
+    
     # Create placement relative to site
     origin = model.createIfcCartesianPoint([0.0, 0.0, 0.0])
     axis = model.createIfcDirection([0.0, 0.0, 1.0])
@@ -535,8 +556,8 @@ def water_to_ifc(
         relating_structure=site
     )
     
-    # Water sits slightly below terrain level
-    z_adjustment = WATER_DEPTH_OFFSET
+    # Underground water sits much lower; surface water sits slightly below terrain
+    z_adjustment = UNDERGROUND_WATER_OFFSET if is_underground else WATER_DEPTH_OFFSET
     
     representations = []
     
@@ -599,8 +620,8 @@ def water_to_ifc(
             None, None, representations
         )
         
-        # Apply blue water style
-        water_style = _create_water_style(model)
+        # Apply water style (different for surface vs underground)
+        water_style = _create_water_style(model, is_underground=is_underground)
         for rep in representations:
             _apply_style_to_representation(model, rep, water_style)
     else:
@@ -1784,6 +1805,11 @@ def forest_to_ifc(
                         self.geometry = Polygon([])
                     self.height = None
                     self.vegetation_type = "hedge"
+                    # Add missing attributes expected by _add_vegetation_properties
+                    self.canopy_area = None
+                    self.tree_species = None
+                    self.density = None
+                    self.is_coniferous = False
             
             hedge = hedge_to_ifc(
                 model, HedgeWrapper(tree_feature), site, body_context,
